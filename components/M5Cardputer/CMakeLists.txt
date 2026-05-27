@@ -1,0 +1,17 @@
+idf_component_register(
+    SRCS
+        "src/M5Cardputer.cpp"
+        "src/utility/Keyboard/Keyboard.cpp"
+        "src/utility/Keyboard/KeyboardReader/IOMatrix.cpp"
+        "src/utility/Keyboard/KeyboardReader/TCA8418.cpp"
+        "src/utility/Adafruit_TCA8418/Adafruit_TCA8418.cpp"
+    INCLUDE_DIRS
+        "src"
+        "src/utility"
+        "src/utility/Keyboard"
+        "src/utility/Keyboard/KeyboardReader"
+        "src/utility/Adafruit_TCA8418"
+    REQUIRES
+        M5Unified
+        board_cardputer_adv
+)

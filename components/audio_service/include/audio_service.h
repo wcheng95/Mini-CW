@@ -1,0 +1,38 @@
+/*
+ * audio_service
+ *
+ * Responsibility: Owns all speaker and CW tone output.
+ * Hardware ownership: speaker/tone output. Other modules must request audio
+ * through audio_service APIs and must not drive speaker hardware directly.
+ */
+
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void audio_service_init(void);
+void audio_service_set_volume(uint8_t percent);
+void audio_cw_set_pitch(uint16_t hz);
+void audio_cw_set_wpm(uint8_t wpm);
+void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm);
+uint16_t audio_cw_get_pitch(void);
+uint8_t audio_cw_get_wpm(void);
+uint8_t audio_cw_get_farnsworth_wpm(void);
+const char *audio_cw_get_pattern(char ch);
+void audio_cw_play_text(const char *text);
+void audio_cw_play_char(char ch);
+void audio_cw_play_pattern(const char *pattern);
+void audio_cw_play_symbol(char symbol);
+void audio_cw_start_sidetone(void);
+void audio_cw_stop_sidetone(void);
+void audio_cw_stop(void);
+bool audio_cw_is_busy(void);
+
+#ifdef __cplusplus
+}
+#endif

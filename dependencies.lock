@@ -1,0 +1,20 @@
+dependencies:
+  espressif/esp_codec_dev:
+    component_hash: 896c67360ae1f8dedaf8a53dfe48c015317fa455f061a5165307892296990028
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.5.10
+  idf:
+    source:
+      type: idf
+    version: 5.5.1
+direct_dependencies:
+- espressif/esp_codec_dev
+manifest_hash: 1d2fee21d5fe60dd25c85c35a46886977f018a8a0812592509fe1542ba0f306e
+target: esp32s3
+version: 2.0.0

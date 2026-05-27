@@ -1,0 +1,24 @@
+/*
+ * storage_service
+ *
+ * Responsibility: Owns profile, lesson, and session log persistence.
+ * Hardware ownership: SD/SPIFFS/file access. Other modules must use
+ * storage_service APIs instead of touching file or filesystem APIs directly.
+ */
+
+#pragma once
+
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+void storage_service_init(void);
+bool storage_profile_load(void);
+bool storage_profile_save(void);
+bool storage_session_log_append(const char *line);
+
+#ifdef __cplusplus
+}
+#endif
