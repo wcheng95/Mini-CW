@@ -1,13 +1,14 @@
 # Mini-CW
 
 Mini-CW is an ESP-IDF project for a standalone CW/Morse trainer on M5Stack
-Cardputer / Cardputer ADV class devices.
+ Cardputer ADV class devices.
 
 The long-term goal is portable ham-radio practice with:
 
 - RX practice: listen to generated Morse and type the copy
 - TX practice: send with a straight key or paddle and receive feedback
 - callsign, QSO, and SOTA/POTA-style exchange practice
+- a few Morse games to help learning
 - local profile, progress, and session logging
 
 ## Architecture
@@ -133,5 +134,6 @@ The exact target may change once the Cardputer ADV board support is selected.
 4. TX practice mode with decoded text and timing feedback.
 5. RX practice mode with typed copy and scoring.
 6. Callsign, QSO, SOTA/POTA exchange, and statistics modes.
+7. 2 or 3 Morse games
 
 See [develop_notes.md](develop_notes.md) for the current design notes.
