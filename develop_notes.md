@@ -145,14 +145,89 @@ Hardware fix note:
 - `board_audio` still initializes the ES8311 in full-duplex mode internally,
   matching the working mic/speaker test, but Mini-CW does not expose mic input.
 
+
+## LCWO-Inspired Training Modes
+
+Mini-CW will implement several LCWO-inspired practice modes, but each mode
+should remain above the shared trainer/keyer/audio architecture. No mode should
+directly own hardware.
+
+Planned modes:
+
+1. **Lessons**
+   - Structured Koch-style character progression.
+   - Each lesson enables a defined character set.
+   - The trainer generates random groups or short copy items using only the
+     active lesson characters.
+
+2. **MorseMachine / Game Mode**
+   - Character-by-character adaptive practice.
+   - Characters answered incorrectly receive higher selection weight.
+   - Characters answered correctly receive lower selection weight.
+   - This may later become a game-style mode with score, streak, and lives.
+
+3. **Plain Text Training**
+   - Practice text should be preloaded from files.
+   - Initial file model: one line equals one practice item.
+   - Example file locations:
+
+```text
+/spiffs/text/beginner.txt
+/spiffs/text/qso_short.txt
+/spiffs/text/sota_pota.txt
+/sdcard/MiniCW/text/beginner.txt
+```
+
+4. **Word Training**
+   - Word lists should also be preloaded from files.
+   - Initial file model: one word or phrase per line.
+   - Example categories: common words, ham-radio words, QSO words, SOTA/POTA
+     words.
+
+5. **Callsign Training**
+   - Support both preloaded callsign lists and on-the-fly generated callsigns.
+   - Preloaded lists can include local calls, SOTA/POTA calls, and DX calls.
+   - Generated callsigns should use realistic-looking amateur-radio patterns.
+   - Local callsigns should receive extra weighting, especially prefixes useful
+     for the user, such as W6/K6/N6/AG6/KO6/KI6.
+
+Shared design rule:
+
+```text
+training mode -> cw_trainer_service -> keyer_service/audio_service/ui_service/storage_service
+```
+
+The training modes produce practice items. The shared trainer/session layer
+handles playback, typed copy, scoring, and statistics. The keyer and audio
+services remain the only path to sidetone and key output.
+
+Suggested common training item type:
+
+```c
+typedef enum {
+    CW_ITEM_CHAR,
+    CW_ITEM_WORD,
+    CW_ITEM_CALLSIGN,
+    CW_ITEM_TEXT_LINE,
+} cw_item_type_t;
+
+typedef struct {
+    cw_item_type_t type;
+    char text[64];
+} cw_training_item_t;
+```
+
 ## Planned Milestones
 
 1. Milestone 1: Project skeleton and hardware ownership boundaries.
 2. Milestone 2: CW tone engine and keyboard-to-Morse tone test.
 3. Milestone 3: Straight key and paddle input through `keyer_service`.
-4. Milestone 4: TX practice mode with decoded text and timing feedback.
-5. Milestone 5: RX practice mode with typed copy and scoring.
-6. Milestone 6: Callsign, QSO, SOTA/POTA exchange, and statistics modes.
+4. Milestone 4: Keyer mode with keyboard TX buffer and shared key output path.
+5. Milestone 5: TX practice mode with decoded text and timing feedback.
+6. Milestone 6: RX practice mode with typed copy and scoring.
+7. Milestone 7: Lessons and MorseMachine adaptive training.
+8. Milestone 8: File-backed Plain Text and Word Training.
+9. Milestone 9: Callsign, QSO, SOTA/POTA exchange, and statistics modes.
 
 ## Near-Term Notes
 
@@ -160,3 +235,43 @@ Hardware fix note:
 - Add board-specific code only under the owning service or HAL.
 - Prefer stubs with clear logs over half-implemented training behavior.
 - Avoid circular dependencies between services.
+
+## UI / Mode Model
+
+Mini-CW uses a vi/vim-inspired modal UI.
+
+On boot, the app enters Keyer mode.
+
+### Keyer Mode
+
+In Keyer mode:
+
+- Paddle or straight-key input is treated as live manual keying.
+- Manual keying drives:
+  - the key output GPIO pin, not yet assigned
+  - the Morse sidetone speaker
+- Keyboard input is appended to a TX text buffer.
+- The TX text buffer allows the keyboard to act as a handicap/accessibility method for sending Morse.
+- Characters, including spaces, are preserved in the buffer.
+- A keyboard-CW sender converts buffered characters into Morse timing and sends them through the same keying path as manual input.
+
+### Escape / Mode Selection
+
+The tilde/backtick key exits the current mode and enters a one-character mode selection state.
+
+Accepted keys:
+
+| Key | Mode |
+|---|---|
+| `k` / `K` | Keyer mode |
+| `m` / `M` | Menu mode |
+
+Other modes will be added later.
+
+Implementation note: accept both backtick `` ` `` and tilde `~` as the escape key, because they usually share the same physical keyboard key.
+
+### Architecture Rule
+
+The key output GPIO must have exactly one owner.
+
+Keyboard-generated CW, paddle CW, straight-key CW, practice playback, and future lesson modes must all route through `keyer_service`, which then calls the hardware abstraction layer for key output and sidetone.
