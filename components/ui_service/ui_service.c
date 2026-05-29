@@ -54,11 +54,11 @@ static void ui_service_prepare_chrome(mini_cw_screen_t *screen)
     if (tx_wpm > 99U) {
         tx_wpm = 99U;
     }
-    if (tone_hz > 1000U) {
-        tone_hz = 1000U;
+    if (tone_hz > 999U) {
+        tone_hz = 999U;
     }
-    if (volume > 100U) {
-        volume = 100U;
+    if (volume > 99U) {
+        volume = 99U;
     }
 
     memset(screen, 0, sizeof(*screen));

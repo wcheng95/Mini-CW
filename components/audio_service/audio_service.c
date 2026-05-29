@@ -26,7 +26,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_MIN_WPM 5
 #define AUDIO_CW_MAX_WPM 40
 #define AUDIO_CW_MIN_PITCH_HZ 300
-#define AUDIO_CW_MAX_PITCH_HZ 1000
+#define AUDIO_CW_MAX_PITCH_HZ 999
 #define AUDIO_CW_MAX_SAMPLE_RATE_HZ 48000U
 #define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000U
 #define AUDIO_CW_TONE_CHUNK_MS 10
@@ -37,6 +37,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_COMMAND_TEXT_MAX 64
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
 #define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 20
+#define AUDIO_SERVICE_MAX_VOLUME_PERCENT 99
 #define AUDIO_SERVICE_FEEDBACK_TONE_MS 50
 #define AUDIO_CW_TWO_PI 6.28318530717958647692f
 
@@ -120,7 +121,7 @@ static audio_output_port_config_t s_output_config = {
 
 static uint8_t clamp_percent(uint8_t percent)
 {
-    return percent > 100 ? 100 : percent;
+    return percent > AUDIO_SERVICE_MAX_VOLUME_PERCENT ? AUDIO_SERVICE_MAX_VOLUME_PERCENT : percent;
 }
 
 static uint8_t clamp_wpm(uint8_t wpm)
@@ -636,8 +637,8 @@ void audio_service_adjust_volume(int delta)
         next = 0;
     }
 
-    if (next > 100) {
-        next = 100;
+    if (next > AUDIO_SERVICE_MAX_VOLUME_PERCENT) {
+        next = AUDIO_SERVICE_MAX_VOLUME_PERCENT;
     }
 
     audio_service_set_volume((uint8_t)next);
