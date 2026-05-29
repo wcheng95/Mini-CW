@@ -16,6 +16,7 @@
 #include "freertos/task.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -28,11 +29,13 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_MAX_PITCH_HZ 1000
 #define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000
 #define AUDIO_CW_TONE_CHUNK_MS 10
+#define AUDIO_CW_ENVELOPE_MS 3
 #define AUDIO_CW_STOP_SILENCE_MS 80
 #define AUDIO_CW_AMPLITUDE 12000
 #define AUDIO_CW_TASK_STACK_BYTES 6144
 #define AUDIO_CW_COMMAND_TEXT_MAX 64
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
+#define AUDIO_CW_TWO_PI 6.28318530717958647692f
 
 typedef struct {
     char ch;
@@ -166,12 +169,23 @@ static void audio_cw_unlock(void)
 static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
 {
     const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t total_samples = (sample_rate * duration_ms) / 1000U;
-    const uint32_t max_chunk_samples = (sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U;
+
+    if (sample_rate == 0) {
+        return;
+    }
+
+    const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
+    const uint32_t max_chunk_samples =
+        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
     int16_t samples[(AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
     uint32_t samples_written = 0;
 
     memset(samples, 0, sizeof(samples));
+
+    if (max_chunk_samples == 0) {
+        vTaskDelay(pdMS_TO_TICKS(duration_ms));
+        return;
+    }
 
     while (samples_written < total_samples) {
         if (interruptible && s_stop_requested) {
@@ -192,6 +206,66 @@ static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
     }
 }
 
+static void audio_cw_calculate_envelope_samples(uint32_t total_samples,
+                                                uint32_t sample_rate,
+                                                uint32_t *attack_samples,
+                                                uint32_t *release_samples)
+{
+    /*
+     * The click-reduction envelope is defined in milliseconds, then converted
+     * to samples using the active output sample rate. At 48 kHz, 3 ms is 144
+     * samples. Very short tones cannot fit a full attack plus release, so the
+     * envelope is scaled to the tone length instead of exceeding it.
+     */
+    uint32_t nominal_samples =
+        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_ENVELOPE_MS) / 1000U);
+
+    if (nominal_samples == 0 && total_samples > 0) {
+        nominal_samples = 1;
+    }
+
+    *attack_samples = nominal_samples;
+    *release_samples = nominal_samples;
+
+    if (*attack_samples + *release_samples > total_samples) {
+        *attack_samples = total_samples / 2U;
+        *release_samples = total_samples - *attack_samples;
+    }
+}
+
+static float audio_cw_envelope_gain(uint32_t sample_index,
+                                    uint32_t total_samples,
+                                    uint32_t attack_samples,
+                                    uint32_t release_samples)
+{
+    float gain = 1.0f;
+
+    if (total_samples == 0) {
+        return 0.0f;
+    }
+
+    if (attack_samples > 0 && sample_index < attack_samples) {
+        gain = attack_samples > 1
+                   ? (float)sample_index / (float)(attack_samples - 1U)
+                   : 0.0f;
+    }
+
+    if (release_samples > 0) {
+        const uint32_t release_start = total_samples - release_samples;
+        if (sample_index >= release_start) {
+            float release_gain = release_samples > 1
+                                     ? (float)(total_samples - 1U - sample_index) /
+                                           (float)(release_samples - 1U)
+                                     : 0.0f;
+            if (release_gain < gain) {
+                gain = release_gain;
+            }
+        }
+    }
+
+    return gain;
+}
+
 static void audio_cw_gap_units(uint32_t units)
 {
     uint32_t delay_ms = dit_ms() * units;
@@ -203,28 +277,58 @@ static void audio_cw_gap_units(uint32_t units)
 static void audio_cw_write_tone_ms(uint32_t duration_ms)
 {
     const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t total_samples = (sample_rate * duration_ms) / 1000U;
-    const uint32_t max_chunk_samples = (sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U;
-    int16_t samples[(AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
-    uint32_t samples_written = 0;
-    uint32_t half_period_samples = sample_rate / ((uint32_t)s_pitch_hz * 2U);
-    uint32_t phase_count = 0;
-    int16_t level = AUDIO_CW_AMPLITUDE;
 
-    if (half_period_samples == 0) {
-        half_period_samples = 1;
+    if (sample_rate == 0) {
+        return;
     }
 
+    const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
+    const uint32_t max_chunk_samples =
+        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
+    int16_t samples[(AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
+    uint32_t samples_written = 0;
+    uint32_t attack_samples = 0;
+    uint32_t release_samples = 0;
+    float phase = 0.0f;
+
+    if (total_samples == 0 || max_chunk_samples == 0) {
+        return;
+    }
+
+    const float phase_step = (AUDIO_CW_TWO_PI * (float)s_pitch_hz) / (float)sample_rate;
+
+    audio_cw_calculate_envelope_samples(total_samples,
+                                        sample_rate,
+                                        &attack_samples,
+                                        &release_samples);
+
+    /*
+     * A sine sidetone is less harsh than the previous square wave because it
+     * avoids strong odd harmonics. The 3 ms attack/release envelope prevents
+     * sharp jumps between silence and tone, which is the main source of clicks.
+     *
+     * Phase is local to one dit/dah and intentionally preserved across all
+     * chunks written by this call, so chunk boundaries cannot create phase
+     * discontinuities. Separate Morse elements ramp down to silence and then
+     * ramp up again, so global phase continuity between calls is unnecessary.
+     */
     while (samples_written < total_samples && !s_stop_requested) {
         uint32_t remaining = total_samples - samples_written;
         uint32_t chunk_samples = remaining < max_chunk_samples ? remaining : max_chunk_samples;
 
         for (uint32_t i = 0; i < chunk_samples; ++i) {
-            samples[i] = level;
-            phase_count++;
-            if (phase_count >= half_period_samples) {
-                phase_count = 0;
-                level = (int16_t)-level;
+            uint32_t sample_index = samples_written + i;
+            float envelope = audio_cw_envelope_gain(sample_index,
+                                                    total_samples,
+                                                    attack_samples,
+                                                    release_samples);
+            float sample = sinf(phase) * (float)AUDIO_CW_AMPLITUDE * envelope;
+
+            samples[i] = (int16_t)sample;
+
+            phase += phase_step;
+            if (phase >= AUDIO_CW_TWO_PI) {
+                phase -= AUDIO_CW_TWO_PI;
             }
         }
 
