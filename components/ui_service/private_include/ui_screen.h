@@ -46,7 +46,6 @@ typedef struct {
 
 void ui_screen_init(void);
 void ui_screen_render(const mini_cw_screen_t *screen);
-void ui_screen_render_demo(void);
 
 #ifdef __cplusplus
 }

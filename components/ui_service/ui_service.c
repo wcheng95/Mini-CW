@@ -8,6 +8,8 @@
 
 #include "ui_service.h"
 
+#include "audio_service.h"
+#include "keyer_service.h"
 #include "ui_cardputer_port.h"
 #include "ui_screen.h"
 
@@ -20,7 +22,6 @@
 static const char *TAG = "ui_service";
 
 static const char *UI_TOP_BAR = "M:Keyer     Setting";
-static const char *UI_BOTTOM_BAR = "TX:20 T:700Hz V:20";
 
 static const ui_input_event_t UI_EVENT_NONE = {
     .type = UI_INPUT_EVENT_NONE,
@@ -41,9 +42,37 @@ static void ui_service_prepare_chrome(mini_cw_screen_t *screen)
         return;
     }
 
+    unsigned tx_wpm = keyer_service_get_tx_wpm();
+    unsigned tone_hz = audio_service_get_tone_hz();
+    unsigned volume = audio_service_get_volume();
+
+    /*
+     * The bottom status row is fixed at 20 visible characters. These display
+     * bounds keep the formatted service values inside that row.
+     */
+    if (tx_wpm > 99U) {
+        tx_wpm = 99U;
+    }
+    if (tone_hz > 1000U) {
+        tone_hz = 1000U;
+    }
+    if (volume > 100U) {
+        volume = 100U;
+    }
+
     memset(screen, 0, sizeof(*screen));
     ui_service_set_line(screen->top, UI_TOP_BAR);
-    ui_service_set_line(screen->bottom, UI_BOTTOM_BAR);
+
+    /*
+     * ui_service composes display text from service-owned values. TX WPM
+     * belongs to keyer_service; tone and volume belong to audio_service.
+     */
+    snprintf(screen->bottom,
+             UI_COLS + 1,
+             "TX:%u T:%uHz V:%u",
+             tx_wpm,
+             tone_hz,
+             volume);
 }
 
 void ui_service_init(void)
@@ -57,7 +86,16 @@ void ui_service_init(void)
 
 void ui_service_show_demo_screen(void)
 {
-    ui_screen_render_demo();
+    mini_cw_screen_t screen;
+
+    ui_service_prepare_chrome(&screen);
+    ui_service_set_line(screen.line[0], "CQ CQ DE AG6AQ");
+    ui_service_set_line(screen.line[1], "BUF:");
+    ui_service_set_line(screen.line[2], "KEY:IAMBIC B");
+    ui_service_set_line(screen.line[3], "OUT:GPIO??");
+    ui_service_set_line(screen.line[4], "READY");
+
+    ui_screen_render(&screen);
 }
 
 void ui_service_show_home(const char *mode_name)

@@ -39,6 +39,7 @@ typedef struct {
 
 void keyer_service_init(void);
 void keyer_service_set_input_mode(keyer_input_mode_t mode);
+uint16_t keyer_service_get_tx_wpm(void);
 void keyer_service_update(void);
 keyer_event_t keyer_service_poll_event(void);
 

@@ -13,6 +13,8 @@
 
 static const char *TAG = "keyer_service";
 
+#define KEYER_DEFAULT_TX_WPM 20U
+
 static const keyer_event_t KEYER_NO_EVENT = {
     .type = KEYER_EVENT_NONE,
     .decoded_char = '\0',
@@ -20,6 +22,7 @@ static const keyer_event_t KEYER_NO_EVENT = {
 };
 
 static keyer_input_mode_t s_input_mode = KEYER_INPUT_STRAIGHT_KEY;
+static uint16_t s_tx_wpm = KEYER_DEFAULT_TX_WPM;
 
 static const char *keyer_input_mode_name(keyer_input_mode_t mode)
 {
@@ -39,12 +42,22 @@ void keyer_service_init(void)
 {
     ESP_LOGI(TAG, "initialized paddle/key owner (Milestone 1 stub)");
     ESP_LOGI(TAG, "input mode: %s", keyer_input_mode_name(s_input_mode));
+    ESP_LOGI(TAG, "tx wpm owner: %u", (unsigned)s_tx_wpm);
 }
 
 void keyer_service_set_input_mode(keyer_input_mode_t mode)
 {
     s_input_mode = mode;
     ESP_LOGI(TAG, "input mode: %s", keyer_input_mode_name(s_input_mode));
+}
+
+uint16_t keyer_service_get_tx_wpm(void)
+{
+    /*
+     * TX speed belongs to keyer_service. Step 2 only exposes the current value
+     * for display composition; paddle timing and adjustment controls come later.
+     */
+    return s_tx_wpm;
 }
 
 void keyer_service_update(void)

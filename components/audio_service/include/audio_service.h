@@ -17,6 +17,8 @@ extern "C" {
 
 void audio_service_init(void);
 void audio_service_set_volume(uint8_t percent);
+uint16_t audio_service_get_tone_hz(void);
+uint8_t audio_service_get_volume(void);
 void audio_cw_set_pitch(uint16_t hz);
 void audio_cw_set_wpm(uint8_t wpm);
 void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm);

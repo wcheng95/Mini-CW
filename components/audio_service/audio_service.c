@@ -36,6 +36,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_TASK_STACK_BYTES 6144
 #define AUDIO_CW_COMMAND_TEXT_MAX 64
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
+#define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 20
 #define AUDIO_CW_TWO_PI 6.28318530717958647692f
 
 typedef struct {
@@ -99,7 +100,7 @@ static const morse_entry_t MORSE_TABLE[] = {
 static uint16_t s_pitch_hz = 700;
 static uint8_t s_wpm = 20;
 static uint8_t s_farnsworth_wpm = 12;
-static uint8_t s_volume_percent = 80;
+static uint8_t s_volume_percent = AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT;
 static bool s_output_ready;
 static volatile bool s_busy;
 static volatile bool s_stop_requested;
@@ -112,7 +113,7 @@ static audio_output_port_config_t s_output_config = {
     .sample_rate_hz = AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ,
     .channels = 1,
     .bits_per_sample = 16,
-    .volume_percent = 80,
+    .volume_percent = AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT,
 };
 
 static uint8_t clamp_percent(uint8_t percent)
@@ -584,6 +585,24 @@ void audio_service_set_volume(uint8_t percent)
     audio_output_port_set_volume(s_volume_percent);
 }
 
+uint16_t audio_service_get_tone_hz(void)
+{
+    /*
+     * Tone frequency is owned by audio_service. UI reads this for display only;
+     * it does not duplicate or modify audio state.
+     */
+    return s_pitch_hz;
+}
+
+uint8_t audio_service_get_volume(void)
+{
+    /*
+     * Speaker volume is owned by audio_service and applied through the private
+     * audio output port.
+     */
+    return s_volume_percent;
+}
+
 void audio_cw_set_pitch(uint16_t hz)
 {
     s_pitch_hz = clamp_pitch(hz);
@@ -604,7 +623,7 @@ void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm)
 
 uint16_t audio_cw_get_pitch(void)
 {
-    return s_pitch_hz;
+    return audio_service_get_tone_hz();
 }
 
 uint8_t audio_cw_get_wpm(void)

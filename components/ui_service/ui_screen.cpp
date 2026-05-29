@@ -107,18 +107,3 @@ void ui_screen_render(const mini_cw_screen_t *screen)
 
     display.endWrite();
 }
-
-void ui_screen_render_demo(void)
-{
-    mini_cw_screen_t screen = {};
-
-    ui_screen_copy_visible(screen.top, "M:Keyer     Setting");
-    ui_screen_copy_visible(screen.line[0], "CQ CQ DE AG6AQ");
-    ui_screen_copy_visible(screen.line[1], "BUF:");
-    ui_screen_copy_visible(screen.line[2], "KEY:IAMBIC B");
-    ui_screen_copy_visible(screen.line[3], "OUT:GPIO??");
-    ui_screen_copy_visible(screen.line[4], "READY");
-    ui_screen_copy_visible(screen.bottom, "TX:20 T:700Hz V:20");
-
-    ui_screen_render(&screen);
-}
