@@ -27,7 +27,8 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_MAX_WPM 40
 #define AUDIO_CW_MIN_PITCH_HZ 400
 #define AUDIO_CW_MAX_PITCH_HZ 1000
-#define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000
+#define AUDIO_CW_MAX_SAMPLE_RATE_HZ 48000U
+#define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000U
 #define AUDIO_CW_TONE_CHUNK_MS 10
 #define AUDIO_CW_ENVELOPE_MS 3
 #define AUDIO_CW_STOP_SILENCE_MS 80
@@ -166,18 +167,28 @@ static void audio_cw_unlock(void)
     }
 }
 
+static bool audio_cw_sample_rate_supported(int sample_rate_hz)
+{
+    /*
+     * The CW tone generator currently supports output rates up to 48 kHz. Its
+     * local stack PCM buffers are sized from AUDIO_CW_MAX_SAMPLE_RATE_HZ, so a
+     * higher runtime rate is rejected before chunk generation.
+     */
+    return sample_rate_hz > 0 &&
+           sample_rate_hz <= (int)AUDIO_CW_MAX_SAMPLE_RATE_HZ;
+}
+
 static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
 {
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-
-    if (sample_rate == 0) {
+    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
         return;
     }
 
+    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
     const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
     const uint32_t max_chunk_samples =
         (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
+    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
     uint32_t samples_written = 0;
 
     memset(samples, 0, sizeof(samples));
@@ -276,16 +287,15 @@ static void audio_cw_gap_units(uint32_t units)
 
 static void audio_cw_write_tone_ms(uint32_t duration_ms)
 {
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-
-    if (sample_rate == 0) {
+    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
         return;
     }
 
+    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
     const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
     const uint32_t max_chunk_samples =
         (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
+    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
     uint32_t samples_written = 0;
     uint32_t attack_samples = 0;
     uint32_t release_samples = 0;
