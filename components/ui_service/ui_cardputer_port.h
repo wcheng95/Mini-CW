@@ -16,8 +16,19 @@
 extern "C" {
 #endif
 
+typedef enum {
+    UI_CARDPUTER_PORT_EVENT_NONE = 0,
+    UI_CARDPUTER_PORT_EVENT_CHAR,
+    UI_CARDPUTER_PORT_EVENT_FN,
+} ui_cardputer_port_event_type_t;
+
+typedef struct {
+    ui_cardputer_port_event_type_t type;
+    char ch;
+} ui_cardputer_port_event_t;
+
 bool ui_cardputer_port_init(void);
-bool ui_cardputer_port_poll_char(char *out_char);
+bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event);
 
 #ifdef __cplusplus
 }

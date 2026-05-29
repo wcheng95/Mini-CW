@@ -84,9 +84,23 @@ bool audio_output_port_init(const audio_output_port_config_t *config)
 void audio_output_port_set_volume(uint8_t percent)
 {
     s_config.volume_percent = clamp_percent(percent);
-    ESP_LOGI(TAG,
-             "set output volume requested: %u (applied on next board_audio init)",
-             (unsigned)s_config.volume_percent);
+
+    if (!s_initialized || !board_audio_is_initialized()) {
+        ESP_LOGI(TAG,
+                 "set output volume requested: %u (applied on next board_audio init)",
+                 (unsigned)s_config.volume_percent);
+        return;
+    }
+
+    esp_err_t err = board_audio_set_speaker_volume(s_config.volume_percent);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "set output volume failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "set output volume: %u", (unsigned)s_config.volume_percent);
 }
 
 bool audio_output_port_write_pcm(const int16_t *samples,

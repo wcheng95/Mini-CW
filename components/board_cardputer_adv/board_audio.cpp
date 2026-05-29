@@ -30,6 +30,19 @@ static board_audio_config_t g_cfg = {
 
 static bool g_initialized = false;
 
+static int board_audio_clamp_volume(int volume)
+{
+    if (volume < 0) {
+        return 0;
+    }
+
+    if (volume > 100) {
+        return 100;
+    }
+
+    return volume;
+}
+
 static esp_err_t board_audio_init_i2c()
 {
     ESP_RETURN_ON_ERROR(
@@ -197,8 +210,7 @@ esp_err_t board_audio_init(const board_audio_config_t* cfg)
     if (g_cfg.sample_rate <= 0) g_cfg.sample_rate = 48000;
     if (g_cfg.channels <= 0) g_cfg.channels = 1;
     if (g_cfg.bits_per_sample <= 0) g_cfg.bits_per_sample = 16;
-    if (g_cfg.speaker_volume < 0) g_cfg.speaker_volume = 0;
-    if (g_cfg.speaker_volume > 100) g_cfg.speaker_volume = 100;
+    g_cfg.speaker_volume = board_audio_clamp_volume(g_cfg.speaker_volume);
 
     esp_err_t err = board_audio_init_i2c();
     if (err != ESP_OK) {
@@ -267,6 +279,24 @@ esp_err_t board_audio_write(const int16_t* samples,
 
     if (bytes_written) *bytes_written = 0;
     return ESP_FAIL;
+}
+
+esp_err_t board_audio_set_speaker_volume(int volume)
+{
+    g_cfg.speaker_volume = board_audio_clamp_volume(volume);
+
+    if (!g_initialized || !g_codec) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_RETURN_ON_ERROR(
+        esp_codec_dev_set_out_vol(g_codec, g_cfg.speaker_volume),
+        TAG,
+        "esp_codec_dev_set_out_vol failed"
+    );
+
+    ESP_LOGI(TAG, "speaker volume set: %d", g_cfg.speaker_volume);
+    return ESP_OK;
 }
 
 void board_audio_deinit(void)

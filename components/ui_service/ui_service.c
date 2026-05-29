@@ -30,6 +30,7 @@ static const ui_input_event_t UI_EVENT_NONE = {
 
 static const char *s_status = "Ready";
 static bool s_cardputer_ready;
+static bool s_bottom_edit_active;
 
 static void ui_service_set_line(char dest[UI_COLS + 1], const char *text)
 {
@@ -63,16 +64,38 @@ static void ui_service_prepare_chrome(mini_cw_screen_t *screen)
     memset(screen, 0, sizeof(*screen));
     ui_service_set_line(screen->top, UI_TOP_BAR);
 
+    char bottom[UI_COLS + 1];
+
     /*
      * ui_service composes display text from service-owned values. TX WPM
      * belongs to keyer_service; tone and volume belong to audio_service.
      */
-    snprintf(screen->bottom,
-             UI_COLS + 1,
+    snprintf(bottom,
+             sizeof(bottom),
              "TX:%u T:%uHz V:%u",
              tx_wpm,
              tone_hz,
              volume);
+
+    if (s_bottom_edit_active) {
+        size_t bottom_len = strlen(bottom);
+
+        if (bottom_len <= UI_COLS - 2U) {
+            screen->bottom[0] = '[';
+            memcpy(&screen->bottom[1], bottom, bottom_len);
+            screen->bottom[bottom_len + 1U] = ']';
+            screen->bottom[bottom_len + 2U] = '\0';
+        } else {
+            snprintf(screen->bottom,
+                     UI_COLS + 1,
+                     "*TX:%u T:%u V:%u",
+                     tx_wpm,
+                     tone_hz,
+                     volume);
+        }
+    } else {
+        ui_service_set_line(screen->bottom, bottom);
+    }
 }
 
 void ui_service_init(void)
@@ -151,6 +174,12 @@ void ui_service_show_tone_test(const ui_tone_test_view_t *view)
     ui_screen_render(&screen);
 }
 
+void ui_service_set_bottom_edit_mode(bool active)
+{
+    s_bottom_edit_active = active;
+    ESP_LOGI(TAG, "bottom edit mode: %s", active ? "on" : "off");
+}
+
 void ui_service_set_status(const char *status)
 {
     s_status = status ? status : "";
@@ -159,15 +188,23 @@ void ui_service_set_status(const char *status)
 
 ui_input_event_t ui_service_poll_input(void)
 {
-    char ch = '\0';
-    if (!ui_cardputer_port_poll_char(&ch)) {
+    ui_cardputer_port_event_t port_event;
+    if (!ui_cardputer_port_poll_input(&port_event)) {
         return UI_EVENT_NONE;
     }
 
     ui_input_event_t event = {
         .type = UI_INPUT_EVENT_NONE,
-        .key = ch,
+        .key = port_event.ch,
     };
+
+    if (port_event.type == UI_CARDPUTER_PORT_EVENT_FN) {
+        event.type = UI_INPUT_EVENT_FN;
+    } else if (port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
+        return UI_EVENT_NONE;
+    }
+
+    char ch = port_event.ch;
 
     if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
         (ch >= '0' && ch <= '9')) {
@@ -184,7 +221,9 @@ ui_input_event_t ui_service_poll_input(void)
         event.type = UI_INPUT_EVENT_CANCEL;
     }
 
-    if (event.type != UI_INPUT_EVENT_NONE) {
+    if (event.type == UI_INPUT_EVENT_FN) {
+        ESP_LOGI(TAG, "input event: type=%d key=Fn", event.type);
+    } else if (event.type != UI_INPUT_EVENT_NONE) {
         ESP_LOGI(TAG, "input event: type=%d key='%c'", event.type, ch);
     }
 

@@ -9,6 +9,7 @@
 
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -30,6 +31,7 @@ typedef enum {
     UI_INPUT_EVENT_WPM_DOWN,
     UI_INPUT_EVENT_PITCH_UP,
     UI_INPUT_EVENT_PITCH_DOWN,
+    UI_INPUT_EVENT_FN,
 } ui_input_event_type_t;
 
 typedef struct {
@@ -50,6 +52,7 @@ void ui_service_init(void);
 void ui_service_show_demo_screen(void);
 void ui_service_show_home(const char *mode_name);
 void ui_service_show_tone_test(const ui_tone_test_view_t *view);
+void ui_service_set_bottom_edit_mode(bool active);
 void ui_service_set_status(const char *status);
 ui_input_event_t ui_service_poll_input(void);
 

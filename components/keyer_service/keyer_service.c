@@ -14,6 +14,8 @@
 static const char *TAG = "keyer_service";
 
 #define KEYER_DEFAULT_TX_WPM 20U
+#define KEYER_MIN_TX_WPM 5U
+#define KEYER_MAX_TX_WPM 60U
 
 static const keyer_event_t KEYER_NO_EVENT = {
     .type = KEYER_EVENT_NONE,
@@ -23,6 +25,19 @@ static const keyer_event_t KEYER_NO_EVENT = {
 
 static keyer_input_mode_t s_input_mode = KEYER_INPUT_STRAIGHT_KEY;
 static uint16_t s_tx_wpm = KEYER_DEFAULT_TX_WPM;
+
+static uint16_t keyer_clamp_tx_wpm(uint16_t wpm)
+{
+    if (wpm < KEYER_MIN_TX_WPM) {
+        return KEYER_MIN_TX_WPM;
+    }
+
+    if (wpm > KEYER_MAX_TX_WPM) {
+        return KEYER_MAX_TX_WPM;
+    }
+
+    return wpm;
+}
 
 static const char *keyer_input_mode_name(keyer_input_mode_t mode)
 {
@@ -54,10 +69,30 @@ void keyer_service_set_input_mode(keyer_input_mode_t mode)
 uint16_t keyer_service_get_tx_wpm(void)
 {
     /*
-     * TX speed belongs to keyer_service. Step 2 only exposes the current value
-     * for display composition; paddle timing and adjustment controls come later.
+     * TX speed belongs to keyer_service. Step 3 exposes adjustment controls,
+     * but paddle timing and full keyer logic still come later.
      */
     return s_tx_wpm;
+}
+
+void keyer_service_set_tx_wpm(uint16_t wpm)
+{
+    s_tx_wpm = keyer_clamp_tx_wpm(wpm);
+    ESP_LOGI(TAG, "set tx wpm: %u", (unsigned)s_tx_wpm);
+}
+
+void keyer_service_adjust_tx_wpm(int delta)
+{
+    int next = (int)s_tx_wpm + delta;
+    if (next < (int)KEYER_MIN_TX_WPM) {
+        next = (int)KEYER_MIN_TX_WPM;
+    }
+
+    if (next > (int)KEYER_MAX_TX_WPM) {
+        next = (int)KEYER_MAX_TX_WPM;
+    }
+
+    keyer_service_set_tx_wpm((uint16_t)next);
 }
 
 void keyer_service_update(void)

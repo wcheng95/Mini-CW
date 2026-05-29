@@ -25,7 +25,7 @@ static const char *TAG = "audio_service";
 
 #define AUDIO_CW_MIN_WPM 5
 #define AUDIO_CW_MAX_WPM 40
-#define AUDIO_CW_MIN_PITCH_HZ 400
+#define AUDIO_CW_MIN_PITCH_HZ 300
 #define AUDIO_CW_MAX_PITCH_HZ 1000
 #define AUDIO_CW_MAX_SAMPLE_RATE_HZ 48000U
 #define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000U
@@ -37,6 +37,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_COMMAND_TEXT_MAX 64
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
 #define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 20
+#define AUDIO_SERVICE_FEEDBACK_TONE_MS 50
 #define AUDIO_CW_TWO_PI 6.28318530717958647692f
 
 typedef struct {
@@ -49,6 +50,7 @@ typedef enum {
     AUDIO_CW_COMMAND_TEXT,
     AUDIO_CW_COMMAND_CHAR,
     AUDIO_CW_COMMAND_PATTERN,
+    AUDIO_CW_COMMAND_FEEDBACK_TONE,
 } audio_cw_command_type_t;
 
 typedef struct {
@@ -451,6 +453,9 @@ static void audio_cw_run_command(const audio_cw_command_t *command)
     case AUDIO_CW_COMMAND_PATTERN:
         audio_cw_play_pattern_blocking(command->pattern);
         break;
+    case AUDIO_CW_COMMAND_FEEDBACK_TONE:
+        audio_cw_write_tone_ms(AUDIO_SERVICE_FEEDBACK_TONE_MS);
+        break;
     case AUDIO_CW_COMMAND_NONE:
     default:
         break;
@@ -583,6 +588,7 @@ void audio_service_set_volume(uint8_t percent)
     s_volume_percent = clamp_percent(percent);
     s_output_config.volume_percent = s_volume_percent;
     audio_output_port_set_volume(s_volume_percent);
+    ESP_LOGI(TAG, "set volume: %u", (unsigned)s_volume_percent);
 }
 
 uint16_t audio_service_get_tone_hz(void)
@@ -603,10 +609,53 @@ uint8_t audio_service_get_volume(void)
     return s_volume_percent;
 }
 
+void audio_service_set_tone_hz(uint16_t tone_hz)
+{
+    s_pitch_hz = clamp_pitch(tone_hz);
+    ESP_LOGI(TAG, "set tone: %u Hz", (unsigned)s_pitch_hz);
+}
+
+void audio_service_adjust_tone_hz(int delta_hz)
+{
+    int next = (int)s_pitch_hz + delta_hz;
+    if (next < AUDIO_CW_MIN_PITCH_HZ) {
+        next = AUDIO_CW_MIN_PITCH_HZ;
+    }
+
+    if (next > AUDIO_CW_MAX_PITCH_HZ) {
+        next = AUDIO_CW_MAX_PITCH_HZ;
+    }
+
+    audio_service_set_tone_hz((uint16_t)next);
+}
+
+void audio_service_adjust_volume(int delta)
+{
+    int next = (int)s_volume_percent + delta;
+    if (next < 0) {
+        next = 0;
+    }
+
+    if (next > 100) {
+        next = 100;
+    }
+
+    audio_service_set_volume((uint8_t)next);
+}
+
+void audio_service_play_feedback_tone(void)
+{
+    audio_cw_command_t command = {
+        .type = AUDIO_CW_COMMAND_FEEDBACK_TONE,
+    };
+
+    ESP_LOGI(TAG, "queue feedback tone: %u ms", (unsigned)AUDIO_SERVICE_FEEDBACK_TONE_MS);
+    audio_cw_queue_command(&command);
+}
+
 void audio_cw_set_pitch(uint16_t hz)
 {
-    s_pitch_hz = clamp_pitch(hz);
-    ESP_LOGI(TAG, "set pitch: %u Hz", (unsigned)s_pitch_hz);
+    audio_service_set_tone_hz(hz);
 }
 
 void audio_cw_set_wpm(uint8_t wpm)

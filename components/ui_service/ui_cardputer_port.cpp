@@ -18,6 +18,7 @@ static const char *TAG = "ui_cardputer_port";
 
 static bool s_initialized = false;
 static char s_last_reported_key = '\0';
+static bool s_last_reported_fn = false;
 
 bool ui_cardputer_port_init(void)
 {
@@ -37,13 +38,14 @@ bool ui_cardputer_port_init(void)
     return true;
 }
 
-bool ui_cardputer_port_poll_char(char *out_char)
+bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 {
-    if (out_char == nullptr) {
+    if (out_event == nullptr) {
         return false;
     }
 
-    *out_char = '\0';
+    out_event->type = UI_CARDPUTER_PORT_EVENT_NONE;
+    out_event->ch = '\0';
 
     if (!s_initialized) {
         return false;
@@ -53,6 +55,20 @@ bool ui_cardputer_port_poll_char(char *out_char)
 
     auto &keys = M5Cardputer.Keyboard.keysState();
     char ch = '\0';
+
+    if (keys.fn) {
+        if (s_last_reported_fn) {
+            return false;
+        }
+
+        s_last_reported_fn = true;
+        s_last_reported_key = '\0';
+        out_event->type = UI_CARDPUTER_PORT_EVENT_FN;
+        ESP_LOGI(TAG, "keyboard fn");
+        return true;
+    }
+
+    s_last_reported_fn = false;
 
     if (!keys.word.empty()) {
         ch = keys.word.front();
@@ -74,7 +90,8 @@ bool ui_cardputer_port_poll_char(char *out_char)
     }
 
     s_last_reported_key = ch;
-    *out_char = ch;
+    out_event->type = UI_CARDPUTER_PORT_EVENT_CHAR;
+    out_event->ch = ch;
     ESP_LOGI(TAG, "keyboard char: '%c'", ch);
     return true;
 }
