@@ -47,6 +47,7 @@ typedef struct {
 } ui_tone_test_view_t;
 
 void ui_service_init(void);
+void ui_service_show_demo_screen(void);
 void ui_service_show_home(const char *mode_name);
 void ui_service_show_tone_test(const ui_tone_test_view_t *view);
 void ui_service_set_status(const char *status);

@@ -9,6 +9,7 @@
 #include "ui_service.h"
 
 #include "ui_cardputer_port.h"
+#include "ui_screen.h"
 
 #include "esp_log.h"
 
@@ -25,9 +26,17 @@ static bool s_cardputer_ready;
 void ui_service_init(void)
 {
     s_cardputer_ready = ui_cardputer_port_init();
+    ui_screen_init();
     ESP_LOGI(TAG,
              "display/keyboard owner: %s",
              s_cardputer_ready ? "M5Cardputer mic_test path" : "log fallback");
+}
+
+void ui_service_show_demo_screen(void)
+{
+    if (s_cardputer_ready) {
+        ui_screen_render_demo();
+    }
 }
 
 void ui_service_show_home(const char *mode_name)

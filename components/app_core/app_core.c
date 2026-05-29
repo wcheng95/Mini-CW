@@ -163,10 +163,9 @@ void app_core_init(void)
 
     ESP_LOGI(TAG, "init: cw_trainer_service");
     cw_trainer_service_init();
-    cw_trainer_start_tone_test();
 
     s_app.initialized = true;
-    app_core_show_tone_test();
+    ui_service_show_demo_screen();
 
     ESP_LOGI(TAG, "Mini-CW service initialization complete");
 }
@@ -180,16 +179,7 @@ void app_core_run(void)
     ESP_LOGI(TAG, "Mini-CW app loop started");
 
     for (;;) {
-        ui_input_event_t ui_event = ui_service_poll_input();
-        app_core_handle_ui_event(ui_event);
-
-        keyer_service_update();
-        keyer_event_t keyer_event = keyer_service_poll_event();
-        if (keyer_event.type != KEYER_EVENT_NONE) {
-            cw_trainer_handle_keyer_event(&keyer_event);
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(20));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
