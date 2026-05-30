@@ -20,10 +20,17 @@
 #include "ui_service.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 static const char *TAG = "app_core";
 
-#define APP_INPUT_POLL_MS 20U
+#define APP_INPUT_POLL_MS 5U
+
+static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    return ticks > 0 ? ticks : 1;
+}
 
 typedef struct {
     app_mode_t mode;
@@ -43,13 +50,13 @@ static void app_core_handle_ui_event(ui_input_event_t event)
 
     if (event.type == UI_INPUT_EVENT_CANCEL) {
         ESP_LOGI(TAG, "cancel input received");
-        audio_cw_stop();
+        audio_service_stop_all();
         return;
     }
 
     if (event.type == UI_INPUT_EVENT_SLEEP_REQUEST) {
         ESP_LOGI(TAG, "sleep input received");
-        audio_cw_stop();
+        audio_service_stop_all();
         ui_service_prepare_for_sleep();
         vTaskDelay(pdMS_TO_TICKS(100));
         platform_hal_enter_deep_sleep();
@@ -95,9 +102,10 @@ void app_core_run(void)
     ESP_LOGI(TAG, "Mini-CW app loop started");
 
     for (;;) {
+        keyer_service_update();
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);
-        vTaskDelay(pdMS_TO_TICKS(APP_INPUT_POLL_MS));
+        vTaskDelay(app_core_ms_to_delay_ticks(APP_INPUT_POLL_MS));
     }
 }
 

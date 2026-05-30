@@ -24,21 +24,21 @@ void audio_service_adjust_tone_hz(int delta_hz);
 void audio_service_adjust_volume(int delta);
 void audio_service_play_feedback_beep(void);
 void audio_service_play_feedback_tone(void);
-void audio_cw_set_pitch(uint16_t hz);
-void audio_cw_set_wpm(uint8_t wpm);
-void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm);
-uint16_t audio_cw_get_pitch(void);
-uint8_t audio_cw_get_wpm(void);
-uint8_t audio_cw_get_farnsworth_wpm(void);
-const char *audio_cw_get_pattern(char ch);
-void audio_cw_play_text(const char *text);
-void audio_cw_play_char(char ch);
-void audio_cw_play_pattern(const char *pattern);
-void audio_cw_play_symbol(char symbol);
-void audio_cw_start_sidetone(void);
-void audio_cw_stop_sidetone(void);
-void audio_cw_stop(void);
-bool audio_cw_is_busy(void);
+void audio_service_tone_on(void);
+void audio_service_tone_off(void);
+void audio_service_play_dit(uint16_t dit_ms);
+void audio_service_play_dah(uint16_t dit_ms);
+void audio_service_stop_all(void);
+bool audio_service_is_busy(void);
+void audio_service_set_cw_wpm(uint8_t wpm);
+uint8_t audio_service_get_cw_wpm(void);
+void audio_service_set_cw_farnsworth_wpm(uint8_t effective_wpm);
+uint8_t audio_service_get_cw_farnsworth_wpm(void);
+const char *audio_service_get_cw_pattern(char ch);
+void audio_service_play_cw_text(const char *text);
+void audio_service_play_cw_char(char ch);
+void audio_service_play_cw_pattern(const char *pattern);
+void audio_service_play_cw_symbol(char symbol);
 
 #ifdef __cplusplus
 }

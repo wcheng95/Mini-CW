@@ -522,18 +522,6 @@ static void ui_service_render_normal(void)
     mini_cw_screen_t screen;
 
     ui_service_prepare_screen(&screen);
-    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "CQ CQ DE AG6AQ");
-    ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "BUF:");
-    snprintf(screen.line[2],
-             sizeof(screen.line[2]),
-             "KEYIN:%s",
-             keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
-    snprintf(screen.line[3],
-             sizeof(screen.line[3]),
-             "KEYOUT:%s",
-             keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
-    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "READY");
-
     ui_screen_render(&screen);
 }
 

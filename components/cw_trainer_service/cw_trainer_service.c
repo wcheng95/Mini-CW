@@ -96,7 +96,7 @@ void cw_trainer_handle_keyer_event(const keyer_event_t *event)
 bool cw_trainer_handle_char_input(char ch)
 {
     char normalized = (char)toupper((unsigned char)ch);
-    const char *pattern = audio_cw_get_pattern(normalized);
+    const char *pattern = audio_service_get_cw_pattern(normalized);
 
     if (pattern == NULL) {
         s_status = "Unsupported";
@@ -109,29 +109,29 @@ bool cw_trainer_handle_char_input(char ch)
     s_status = "Queued";
 
     ESP_LOGI(TAG, "character input: %c %s", s_last_char, s_last_pattern);
-    audio_cw_play_char(normalized);
+    audio_service_play_cw_char(normalized);
     return true;
 }
 
 void cw_trainer_adjust_wpm(int delta)
 {
-    int next = (int)audio_cw_get_wpm() + delta;
+    int next = (int)audio_service_get_cw_wpm() + delta;
     if (next < 0) {
         next = 0;
     }
 
-    audio_cw_set_wpm((uint8_t)next);
+    audio_service_set_cw_wpm((uint8_t)next);
     s_status = "WPM updated";
 }
 
 void cw_trainer_adjust_pitch(int delta_hz)
 {
-    int next = (int)audio_cw_get_pitch() + delta_hz;
+    int next = (int)audio_service_get_tone_hz() + delta_hz;
     if (next < 0) {
         next = 0;
     }
 
-    audio_cw_set_pitch((uint16_t)next);
+    audio_service_set_tone_hz((uint16_t)next);
     s_status = "Pitch updated";
 }
 
