@@ -299,6 +299,22 @@ esp_err_t board_audio_set_speaker_volume(int volume)
     return ESP_OK;
 }
 
+esp_err_t board_audio_set_speaker_mute(bool mute)
+{
+    if (!g_initialized || !g_codec) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    ESP_RETURN_ON_ERROR(
+        esp_codec_dev_set_out_mute(g_codec, mute),
+        TAG,
+        "esp_codec_dev_set_out_mute failed"
+    );
+
+    ESP_LOGI(TAG, "speaker mute set: %s", mute ? "on" : "off");
+    return ESP_OK;
+}
+
 void board_audio_deinit(void)
 {
     if (g_codec) {

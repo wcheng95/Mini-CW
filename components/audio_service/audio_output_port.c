@@ -103,6 +103,26 @@ void audio_output_port_set_volume(uint8_t percent)
     ESP_LOGI(TAG, "set output volume: %u", (unsigned)s_config.volume_percent);
 }
 
+void audio_output_port_set_muted(bool muted)
+{
+    if (!s_initialized || !board_audio_is_initialized()) {
+        ESP_LOGI(TAG,
+                 "set output mute requested: %s (applied after board_audio init)",
+                 muted ? "on" : "off");
+        return;
+    }
+
+    esp_err_t err = board_audio_set_speaker_mute(muted);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG,
+                 "set output mute failed: %s",
+                 esp_err_to_name(err));
+        return;
+    }
+
+    ESP_LOGI(TAG, "set output mute: %s", muted ? "on" : "off");
+}
+
 bool audio_output_port_write_pcm(const int16_t *samples,
                                  size_t sample_count,
                                  size_t *bytes_written)

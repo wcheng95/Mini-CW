@@ -22,6 +22,7 @@ typedef struct {
 
 bool audio_output_port_init(const audio_output_port_config_t *config);
 void audio_output_port_set_volume(uint8_t percent);
+void audio_output_port_set_muted(bool muted);
 bool audio_output_port_write_pcm(const int16_t *samples,
                                  size_t sample_count,
                                  size_t *bytes_written);

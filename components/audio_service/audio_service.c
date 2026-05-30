@@ -182,6 +182,15 @@ static bool audio_cw_sample_rate_supported(int sample_rate_hz)
            sample_rate_hz <= (int)AUDIO_CW_MAX_SAMPLE_RATE_HZ;
 }
 
+static void audio_service_set_output_muted(bool muted)
+{
+    if (!s_output_ready) {
+        return;
+    }
+
+    audio_output_port_set_muted(muted);
+}
+
 static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
 {
     if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
@@ -509,8 +518,10 @@ static void audio_cw_task(void *arg)
 
             s_stop_requested = false;
             s_busy = true;
+            audio_service_set_output_muted(false);
             audio_cw_run_command(&command);
             audio_cw_write_silence_ms(AUDIO_CW_STOP_SILENCE_MS, false);
+            audio_service_set_output_muted(true);
             s_busy = false;
         }
     }
@@ -542,8 +553,10 @@ static void audio_cw_queue_command(const audio_cw_command_t *command)
     audio_cw_clear_pending_command();
     s_stop_requested = false;
     s_busy = true;
+    audio_service_set_output_muted(false);
     audio_cw_run_command(command);
     audio_cw_write_silence_ms(AUDIO_CW_STOP_SILENCE_MS, false);
+    audio_service_set_output_muted(true);
     s_busy = false;
 }
 
@@ -553,6 +566,7 @@ void audio_service_init(void)
     s_wpm = clamp_wpm(s_wpm);
     s_pitch_hz = clamp_pitch(s_pitch_hz);
     s_output_ready = audio_output_port_init(&s_output_config);
+    audio_service_set_output_muted(true);
 
     if (s_command_mutex == NULL) {
         s_command_mutex = xSemaphoreCreateMutex();
@@ -768,6 +782,7 @@ void audio_cw_stop(void)
 {
     s_stop_requested = true;
     audio_cw_clear_pending_command();
+    audio_service_set_output_muted(true);
 
     if (s_audio_task != NULL) {
         xTaskNotifyGive(s_audio_task);

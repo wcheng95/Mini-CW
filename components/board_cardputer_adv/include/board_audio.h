@@ -28,6 +28,7 @@ esp_err_t board_audio_write(const int16_t* samples,
                             size_t* bytes_written);
 
 esp_err_t board_audio_set_speaker_volume(int volume);
+esp_err_t board_audio_set_speaker_mute(bool mute);
 
 void board_audio_deinit(void);
 
