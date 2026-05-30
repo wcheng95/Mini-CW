@@ -49,24 +49,22 @@ Each hardware resource has exactly one owner:
 `app_core` and trainer modules must not directly call GPIO, display, speaker,
 SD/SPIFFS, RTC, or PMU APIs.
 
-## Milestone 2 Status
+## Current Step 1 UI Status
 
-Milestone 2 adds the first usable trainer path: pressing a Cardputer keyboard
-key `A-Z` or `0-9` plays that character as Morse code through the speaker.
-This is still a tone-test path, not a full lesson, scoring, or TX-practice mode.
+Mini-CW is currently locking the Cardputer UI layout and ownership boundary
+before continuing service-owned keyer/audio behavior.
 
 Current boot behavior:
 
 - initializes `platform_hal`, `ui_service`, `audio_service`, `keyer_service`,
   `storage_service`, and `cw_trainer_service`
 - logs the service initialization order
-- shows a Mini-CW Tone Test screen through `ui_service`
-- keeps and displays the current app mode, last character, last Morse pattern,
-  WPM, pitch, and status
+- shows the fixed 240x135 Mini-CW demo screen through `ui_service`
+- uses a field-based top row: `[mode:13] [tone:3] [vol:2]`
+- uses five 20-character middle display/menu lines
+- uses a cyan-on-black bottom row: `[KeyIn:8] [KeyOut:8] [KeyInWPM:2]`
 - polls the Cardputer ADV TCA8418 keyboard through the UI/input owner
-- routes character input as `ui_service -> app_core -> cw_trainer_service ->
-  audio_service`
-- plays CW through the `audio_service` speaker owner
+- keeps global and local menu view state inside `ui_service`
 
 Audio note:
 
@@ -83,37 +81,38 @@ UI note:
 - Cardputer display and keyboard use the copied `mic_test` `M5Cardputer`,
   `M5GFX`, and `M5Unified` components through a private `ui_service` port.
 - The display uses the verified `M5Cardputer.Display.setRotation(1)` path.
-- Screen text follows the `mini_ft8_min` Cardputer convention: text size 2,
-  six short 19-pixel lines.
+- Screen text uses text size 2 for 12x16 cells and 20 visible characters.
+- `app_core` calls only public `ui_service` APIs. Fixed layout rendering stays
+  private in `ui_screen`, and low-level display/keyboard calls stay private in
+  `ui_cardputer_port`.
 
-Tone-test controls:
+Menu controls:
 
-- `A-Z` or `0-9`: play the Morse character.
-- `+` or `=`: increase WPM.
-- `-`: decrease WPM.
-- `[`: decrease pitch.
-- `]`: increase pitch.
-- Backtick, or ESC if available from the input backend: stop audio.
+- `Ctrl`: enter/exit global menu.
+- `Fn`: enter/exit local mode-specific menu.
+- `1` to `5`: select visible menu item, currently stubbed.
+- Up/Down paging uses the Mini-FT8-style `;` / `.` key mapping for now.
+- Left/Right value changes use the Mini-FT8-style `,` / `/` key mapping for
+  now and are currently stubbed.
 
-Timing:
+Expected normal demo screen:
 
-- Default WPM: 20.
-- Default pitch: 700 Hz.
-- WPM bounds: 5 to 40.
-- Pitch bounds: 400 to 1000 Hz.
-- Dit length: `dit_ms = 1200 / WPM`.
-- Dah length: 3 dits.
-- Element gap: 1 dit.
-- Character gap: 3 dits.
-- Word gap: 7 dits.
+```text
+Keyer         700 40
+CQ CQ DE AG6AQ
+BUF:
+KEYIN:Paddle
+KEYOUT:Paddle
+READY
+Paddle   Paddle   20
+```
 
 Current limitations:
 
-- Playback uses a simple one-slot audio task so the app loop can still process
-  the stop key while a character is playing. A fuller queue remains future work.
-- Farnsworth timing is stored but not applied yet.
-- Paddle/key decoding, lessons, scoring, and persistence backends are still
-  future milestones.
+- FATFS, `setting.txt`, USB mass storage, persistence, real paddle/straight-key
+  I/O, full keyer behavior, and service-owned bottom status remain future work.
+- Audio/keyer services still exist, but the Step 1 UI demo values are framework
+  values until the next ownership pass connects service-owned data.
 
 ## Build
 

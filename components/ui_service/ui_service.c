@@ -1,210 +1,261 @@
 /*
  * ui_service
  *
- * Responsibility: Owns screen drawing and keyboard/input event abstraction.
- * Hardware ownership: display and Cardputer keyboard/input. Milestone 2 uses
- * private display and keyboard ports behind this service.
+ * Responsibility: Owns Mini-CW UI behavior/state and public UI APIs. Fixed
+ * 240x135 drawing is private to ui_screen, and low-level Cardputer
+ * display/keyboard access is private to ui_cardputer_port.
  */
 
 #include "ui_service.h"
 
-#include "audio_service.h"
-#include "keyer_service.h"
 #include "ui_cardputer_port.h"
 #include "ui_screen.h"
 
 #include "esp_log.h"
 
-#include <ctype.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "ui_service";
 
-static const char *UI_TOP_BAR = "M:Keyer     Setting";
+typedef enum {
+    MINI_CW_MODE_PRACTICE = 0,
+    MINI_CW_MODE_KEYER,
+    MINI_CW_MODE_LESSONS,
+} mini_cw_mode_t;
+
+typedef enum {
+    UI_VIEW_NORMAL = 0,
+    UI_VIEW_GLOBAL_MENU,
+    UI_VIEW_LOCAL_MENU,
+} ui_view_t;
+
+typedef struct {
+    mini_cw_mode_t mode;
+    ui_view_t view;
+    uint8_t global_page;
+    uint8_t local_page;
+} ui_service_state_t;
 
 static const ui_input_event_t UI_EVENT_NONE = {
     .type = UI_INPUT_EVENT_NONE,
     .key = '\0',
 };
 
-static const char *s_status = "Ready";
-static bool s_cardputer_ready;
-static bool s_bottom_edit_active;
+static ui_service_state_t s_ui = {
+    .mode = MINI_CW_MODE_KEYER,
+    .view = UI_VIEW_NORMAL,
+    .global_page = 0,
+    .local_page = 0,
+};
 
-static void ui_service_set_line(char dest[UI_COLS + 1], const char *text)
+static bool s_cardputer_ready;
+
+#define UI_GLOBAL_PAGE_COUNT 2U
+#define UI_LOCAL_PAGE_COUNT 1U
+
+static void ui_service_render_current_view(void);
+
+static const char *ui_service_mode_name(mini_cw_mode_t mode)
 {
-    snprintf(dest, UI_COLS + 1, "%s", text ? text : "");
+    switch (mode) {
+    case MINI_CW_MODE_PRACTICE:
+        return "Practice";
+    case MINI_CW_MODE_KEYER:
+        return "Keyer";
+    case MINI_CW_MODE_LESSONS:
+        return "Lessons";
+    default:
+        return "Unknown";
+    }
 }
 
-static void ui_service_prepare_chrome(mini_cw_screen_t *screen)
+static void ui_service_set_text(char *dest, size_t dest_size, const char *text)
+{
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    snprintf(dest, dest_size, "%s", text ? text : "");
+}
+
+static void ui_service_prepare_screen(mini_cw_screen_t *screen)
 {
     if (screen == NULL) {
         return;
     }
 
-    unsigned tx_wpm = keyer_service_get_tx_wpm();
-    unsigned tone_hz = audio_service_get_tone_hz();
-    unsigned volume = audio_service_get_volume();
-
-    /*
-     * The bottom status row is fixed at 20 visible characters. These display
-     * bounds keep the formatted service values inside that row.
-     */
-    if (tx_wpm > 99U) {
-        tx_wpm = 99U;
-    }
-    if (tone_hz > 999U) {
-        tone_hz = 999U;
-    }
-    if (volume > 99U) {
-        volume = 99U;
-    }
-
     memset(screen, 0, sizeof(*screen));
-    ui_service_set_line(screen->top, UI_TOP_BAR);
+    ui_service_set_text(screen->mode, sizeof(screen->mode), ui_service_mode_name(s_ui.mode));
+    ui_service_set_text(screen->tone, sizeof(screen->tone), "700");
+    ui_service_set_text(screen->vol, sizeof(screen->vol), "40");
+    ui_service_set_text(screen->key_in, sizeof(screen->key_in), "Paddle");
+    ui_service_set_text(screen->key_out, sizeof(screen->key_out), "Paddle");
+    ui_service_set_text(screen->key_wpm, sizeof(screen->key_wpm), "20");
+}
 
-    char bottom[UI_COLS + 1];
+static void ui_service_render_normal(void)
+{
+    mini_cw_screen_t screen;
 
-    /*
-     * ui_service composes display text from service-owned values. TX WPM
-     * belongs to keyer_service; tone and volume belong to audio_service.
-     */
-    snprintf(bottom,
-             sizeof(bottom),
-             "TX:%u T:%uHz V:%u",
-             tx_wpm,
-             tone_hz,
-             volume);
+    ui_service_prepare_screen(&screen);
+    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "CQ CQ DE AG6AQ");
+    ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "BUF:");
+    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "KEYIN:Paddle");
+    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "KEYOUT:Paddle");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "READY");
 
-    if (s_bottom_edit_active) {
-        size_t bottom_len = strlen(bottom);
+    ui_screen_render(&screen);
+}
 
-        if (bottom_len <= UI_COLS - 2U) {
-            screen->bottom[0] = '[';
-            memcpy(&screen->bottom[1], bottom, bottom_len);
-            screen->bottom[bottom_len + 1U] = ']';
-            screen->bottom[bottom_len + 2U] = '\0';
-        } else {
-            snprintf(screen->bottom,
-                     UI_COLS + 1,
-                     "*TX:%u T:%u V:%u",
-                     tx_wpm,
-                     tone_hz,
-                     volume);
-        }
+static void ui_service_render_global_menu(void)
+{
+    mini_cw_screen_t screen;
+
+    ui_service_prepare_screen(&screen);
+
+    if (s_ui.global_page == 0U) {
+        snprintf(screen.line[0],
+                 sizeof(screen.line[0]),
+                 "1 Mode:%s",
+                 ui_service_mode_name(s_ui.mode));
+        ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Tone:700Hz");
+        ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3 Volume:40");
+        ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4 KeyIn:Paddle");
+        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 KeyIn WPM:20");
     } else {
-        ui_service_set_line(screen->bottom, bottom);
+        ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "1 KeyOut:Paddle");
+        ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 KeyOut WPM:20");
+        ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3 Sleep/Batt 90%");
+        ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4 Date");
+        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Time");
     }
-}
-
-void ui_service_init(void)
-{
-    s_cardputer_ready = ui_cardputer_port_init();
-    ui_screen_init();
-    ESP_LOGI(TAG,
-             "display/keyboard owner: %s",
-             s_cardputer_ready ? "M5Cardputer mic_test path" : "log fallback");
-}
-
-void ui_service_show_demo_screen(void)
-{
-    mini_cw_screen_t screen;
-
-    ui_service_prepare_chrome(&screen);
-    ui_service_set_line(screen.line[0], "CQ CQ DE AG6AQ");
-    ui_service_set_line(screen.line[1], "BUF:");
-    ui_service_set_line(screen.line[2], "KEY:IAMBIC B");
-    ui_service_set_line(screen.line[3], "OUT:GPIO??");
-    ui_service_set_line(screen.line[4], "READY");
 
     ui_screen_render(&screen);
 }
 
-void ui_service_show_home(const char *mode_name)
+static void ui_service_render_local_no_settings(void)
 {
-    const char *display_mode = mode_name ? mode_name : "Unknown";
     mini_cw_screen_t screen;
 
-    ESP_LOGI(TAG, "screen: Mini-CW");
-    ESP_LOGI(TAG, "screen: Mode: %s", display_mode);
-    ESP_LOGI(TAG, "screen: Status: %s", s_status);
-    ESP_LOGI(TAG, "screen: R RX  T TX  C Call  Q QSO");
-    ESP_LOGI(TAG, "screen: S Stats  M Menu  Esc Stop");
-
-    ui_service_prepare_chrome(&screen);
-    snprintf(screen.line[0], UI_COLS + 1, "Mode:%s", display_mode);
-    snprintf(screen.line[1], UI_COLS + 1, "Status:%s", s_status ? s_status : "");
-    ui_service_set_line(screen.line[2], "A-Z 0-9");
-    ui_service_set_line(screen.line[3], "+-WPM []Hz");
-    ui_service_set_line(screen.line[4], "` Stop");
+    ui_service_prepare_screen(&screen);
+    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "No local settings");
 
     ui_screen_render(&screen);
 }
 
-void ui_service_show_tone_test(const ui_tone_test_view_t *view)
+static void ui_service_render_local_stub(void)
 {
-    const char *mode = (view && view->mode_name) ? view->mode_name : "Tone Test";
-    const char *pattern = (view && view->last_pattern) ? view->last_pattern : "";
-    const char *status = (view && view->status) ? view->status : "Ready";
-    char last = (view && view->last_char) ? view->last_char : '-';
-    uint8_t wpm = view ? view->wpm : 20;
-    uint16_t pitch_hz = view ? view->pitch_hz : 700;
     mini_cw_screen_t screen;
 
-    if (last >= 'a' && last <= 'z') {
-        last = (char)toupper((unsigned char)last);
-    }
-
-    ESP_LOGI(TAG, "screen: Mini-CW Tone Test");
-    ESP_LOGI(TAG, "screen: Mode: %s", mode);
-    ESP_LOGI(TAG, "screen: Press A-Z / 0-9");
-    ESP_LOGI(TAG, "screen: Last: %c  %s", last, pattern);
-    ESP_LOGI(TAG, "screen: WPM: %u  Pitch: %u", (unsigned)wpm, (unsigned)pitch_hz);
-    ESP_LOGI(TAG, "screen: +/- WPM  [] pitch  ` stop");
-    ESP_LOGI(TAG, "screen: Status: %s", status);
-
-    ui_service_prepare_chrome(&screen);
-    snprintf(screen.line[0], UI_COLS + 1, "Mode:%s", mode);
-    ui_service_set_line(screen.line[1], "Press A-Z 0-9");
-    snprintf(screen.line[2], UI_COLS + 1, "Last:%c %s", last, pattern);
-    snprintf(screen.line[3], UI_COLS + 1, "%uWPM %uHz", (unsigned)wpm, (unsigned)pitch_hz);
-    snprintf(screen.line[4], UI_COLS + 1, "`Stop %s", status);
+    ui_service_prepare_screen(&screen);
+    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "1 Local:stub");
+    ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Mode only");
+    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3");
+    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
 
     ui_screen_render(&screen);
 }
 
-void ui_service_set_bottom_edit_mode(bool active)
+static void ui_service_render_local_menu(void)
 {
-    s_bottom_edit_active = active;
-    ESP_LOGI(TAG, "bottom edit mode: %s", active ? "on" : "off");
+    switch (s_ui.mode) {
+    case MINI_CW_MODE_PRACTICE:
+        ui_service_render_local_no_settings();
+        break;
+    case MINI_CW_MODE_KEYER:
+    case MINI_CW_MODE_LESSONS:
+    default:
+        ui_service_render_local_stub();
+        break;
+    }
 }
 
-void ui_service_set_status(const char *status)
+static void ui_service_render_current_view(void)
 {
-    s_status = status ? status : "";
-    ESP_LOGI(TAG, "status: %s", s_status);
+    switch (s_ui.view) {
+    case UI_VIEW_GLOBAL_MENU:
+        ui_service_render_global_menu();
+        break;
+    case UI_VIEW_LOCAL_MENU:
+        ui_service_render_local_menu();
+        break;
+    case UI_VIEW_NORMAL:
+    default:
+        ui_service_render_normal();
+        break;
+    }
 }
 
-ui_input_event_t ui_service_poll_input(void)
+static void ui_service_change_menu_page(int delta)
 {
-    ui_cardputer_port_event_t port_event;
-    if (!ui_cardputer_port_poll_input(&port_event)) {
-        return UI_EVENT_NONE;
+    uint8_t *page = NULL;
+    uint8_t page_count = 1U;
+
+    if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
+        page = &s_ui.global_page;
+        page_count = UI_GLOBAL_PAGE_COUNT;
+    } else if (s_ui.view == UI_VIEW_LOCAL_MENU) {
+        page = &s_ui.local_page;
+        page_count = UI_LOCAL_PAGE_COUNT;
     }
 
+    if (page == NULL) {
+        return;
+    }
+
+    if (delta < 0 && *page > 0U) {
+        --(*page);
+    } else if (delta > 0 && (uint8_t)(*page + 1U) < page_count) {
+        ++(*page);
+    }
+}
+
+static bool ui_service_handle_menu_char(char key)
+{
+    if (key >= '1' && key <= '5') {
+        ESP_LOGI(TAG,
+                 "menu item %c selected on view=%u page=%u",
+                 key,
+                 (unsigned)s_ui.view,
+                 (unsigned)(s_ui.view == UI_VIEW_GLOBAL_MENU ? s_ui.global_page
+                                                              : s_ui.local_page));
+        return true;
+    }
+
+    // Menu navigation uses ; . , /. U/D/L/R are reserved for future shortcuts.
+    if (key == ';') {
+        ui_service_change_menu_page(-1);
+        return true;
+    }
+
+    if (key == '.') {
+        ui_service_change_menu_page(1);
+        return true;
+    }
+
+    if (key == ',') {
+        ESP_LOGI(TAG, "menu left/change-value stub");
+        return true;
+    }
+
+    if (key == '/') {
+        ESP_LOGI(TAG, "menu right/change-value stub");
+        return true;
+    }
+
+    return false;
+}
+
+static ui_input_event_t ui_service_map_normal_char(char ch)
+{
     ui_input_event_t event = {
         .type = UI_INPUT_EVENT_NONE,
-        .key = port_event.ch,
+        .key = ch,
     };
-
-    if (port_event.type == UI_CARDPUTER_PORT_EVENT_FN) {
-        event.type = UI_INPUT_EVENT_FN;
-    } else if (port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
-        return UI_EVENT_NONE;
-    }
-
-    char ch = port_event.ch;
 
     if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
         (ch >= '0' && ch <= '9')) {
@@ -221,10 +272,107 @@ ui_input_event_t ui_service_poll_input(void)
         event.type = UI_INPUT_EVENT_CANCEL;
     }
 
-    if (event.type == UI_INPUT_EVENT_FN) {
-        ESP_LOGI(TAG, "input event: type=%d key=Fn", event.type);
-    } else if (event.type != UI_INPUT_EVENT_NONE) {
-        ESP_LOGI(TAG, "input event: type=%d key='%c'", event.type, ch);
+    return event;
+}
+
+void ui_service_init(void)
+{
+    s_cardputer_ready = ui_cardputer_port_init();
+    ui_screen_init();
+    ESP_LOGI(TAG,
+             "display/keyboard owner: %s",
+             s_cardputer_ready ? "M5Cardputer mic_test path" : "log fallback");
+}
+
+void ui_service_show_demo_screen(void)
+{
+    s_ui.view = UI_VIEW_NORMAL;
+    ui_service_render_current_view();
+}
+
+void ui_service_enter_global_menu(void)
+{
+    s_ui.view = UI_VIEW_GLOBAL_MENU;
+    s_ui.global_page = 0U;
+    ESP_LOGI(TAG, "global menu entered");
+    ui_service_render_current_view();
+}
+
+void ui_service_exit_global_menu(void)
+{
+    if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
+        s_ui.view = UI_VIEW_NORMAL;
+    }
+
+    ESP_LOGI(TAG, "global menu exited");
+    ui_service_render_current_view();
+}
+
+void ui_service_enter_local_menu(void)
+{
+    s_ui.view = UI_VIEW_LOCAL_MENU;
+    s_ui.local_page = 0U;
+    ESP_LOGI(TAG, "local menu entered");
+    ui_service_render_current_view();
+}
+
+void ui_service_exit_local_menu(void)
+{
+    if (s_ui.view == UI_VIEW_LOCAL_MENU) {
+        s_ui.view = UI_VIEW_NORMAL;
+    }
+
+    ESP_LOGI(TAG, "local menu exited");
+    ui_service_render_current_view();
+}
+
+ui_input_event_t ui_service_poll_input(void)
+{
+    ui_cardputer_port_event_t port_event;
+    if (!ui_cardputer_port_poll_input(&port_event)) {
+        return UI_EVENT_NONE;
+    }
+
+    if (port_event.type == UI_CARDPUTER_PORT_EVENT_CTRL) {
+        if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
+            ui_service_exit_global_menu();
+        } else if (s_ui.view == UI_VIEW_NORMAL) {
+            ui_service_enter_global_menu();
+        } else {
+            ESP_LOGI(TAG, "ctrl ignored in local menu");
+        }
+
+        return UI_EVENT_NONE;
+    }
+
+    if (port_event.type == UI_CARDPUTER_PORT_EVENT_FN) {
+        if (s_ui.view == UI_VIEW_LOCAL_MENU) {
+            ui_service_exit_local_menu();
+        } else if (s_ui.view == UI_VIEW_NORMAL) {
+            ui_service_enter_local_menu();
+        } else {
+            ESP_LOGI(TAG, "fn ignored in global menu");
+        }
+
+        return UI_EVENT_NONE;
+    }
+
+    if (port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
+        return UI_EVENT_NONE;
+    }
+
+    if (s_ui.view == UI_VIEW_GLOBAL_MENU || s_ui.view == UI_VIEW_LOCAL_MENU) {
+        if (ui_service_handle_menu_char(port_event.ch)) {
+            ui_service_render_current_view();
+        }
+
+        return UI_EVENT_NONE;
+    }
+
+    ui_input_event_t event = ui_service_map_normal_char(port_event.ch);
+
+    if (event.type != UI_INPUT_EVENT_NONE) {
+        ESP_LOGI(TAG, "input event: type=%d key='%c'", event.type, event.key);
     }
 
     return event;

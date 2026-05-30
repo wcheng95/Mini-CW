@@ -47,13 +47,9 @@ display, speaker, SD/SPIFFS, RTC, or PMU APIs outside its ownership boundary.
 ## Initial App Modes
 
 ```text
-APP_MODE_TONE_TEST
-APP_MODE_RX_PRACTICE
-APP_MODE_TX_PRACTICE
-APP_MODE_CALLSIGN
-APP_MODE_QSO
-APP_MODE_STATS
-APP_MODE_MENU
+APP_MODE_PRACTICE
+APP_MODE_KEYER
+APP_MODE_LESSONS
 ```
 
 ## Milestone 1 Status
@@ -91,59 +87,31 @@ Not implemented in Milestone 1:
 - Real ES8311/I2S speaker output
 - Persistent storage backend
 
-## Milestone 2 Status
+## Current Step 1 UI Status
 
-Milestone 2 implements the CW tone engine and keyboard-to-Morse test path.
+Step 1 now focuses on the UI contract before continuing keyer/audio behavior.
 
 Implemented:
 
-- `APP_MODE_TONE_TEST` as the startup mode.
-- Real Cardputer/Cardputer ADV ST7789 screen drawing under `ui_service`.
-- Real Cardputer ADV TCA8418 keyboard polling under `ui_service`.
-- Morse lookup for `A-Z` and `0-9` inside `audio_service`.
-- Default CW settings: 20 WPM, 700 Hz pitch, 12 WPM Farnsworth placeholder.
-- Safe bounds: WPM 5 to 40, pitch 400 to 1000 Hz.
-- One-slot audio task behind `audio_cw_play_char()` and
-  `audio_cw_play_text()`, keeping the app loop responsive enough for stop.
-- ES8311/I2S speaker output through the private `audio_output_port`, with
-  log/timing fallback if the backend is unavailable.
-- High-level event routing:
-  `ui_service -> app_core -> cw_trainer_service -> audio_service`.
-- UI state showing last played character, Morse pattern, WPM, pitch, and status.
-- Simple controls: `A-Z`/`0-9` play Morse, `+`/`-` adjust WPM, `[`/`]` adjust
-  pitch, backtick/ESC requests stop.
-
-Milestone 2 timing:
-
-```text
-dit_ms = 1200 / WPM
-dit = 1 unit
-dah = 3 units
-element gap = 1 unit
-character gap = 3 units
-word gap = 7 units
-```
+- `APP_MODE_KEYER` as the startup app mode.
+- Real Cardputer/Cardputer ADV ST7789 screen drawing behind `ui_service`.
+- Real Cardputer ADV TCA8418 keyboard polling behind `ui_service`.
+- `ui_service` owns UI view/menu state.
+- `ui_screen` is private to `ui_service` and owns fixed 240x135 layout.
+- `ui_cardputer_port` owns all low-level `M5Cardputer.Display` and
+  `M5Cardputer.Keyboard` access.
+- Normal demo view plus global menu page 1, global menu page 2, and local menu
+  framework views.
+- Ctrl toggles global menu; Fn toggles local menu.
 
 Current limitations:
 
-- Playback is a one-slot command path, not a full queue. A new character
-  replaces any pending command and asks the current tone to stop.
-- Farnsworth WPM is stored and logged but not applied to spacing yet.
-- No lessons, scoring, copy checking, paddle decoding, or TX feedback yet.
-- Storage APIs remain persistence stubs.
-
-Hardware fix note:
-
-- The display, keyboard, and speaker paths now reuse copied components from
-  `C:\MiniFT8-idf\mic_test\components`.
-- `ui_service` owns `M5Cardputer.beginDisplayOnly(true)`, display drawing, and
-  `M5Cardputer.Keyboard.keysState()` polling.
-- `ui_service` now uses the `mini_ft8_min` screen scale: text size 2 with
-  short six-line screens.
-- `audio_service` owns speaker output through `board_audio_init()` and
-  `board_audio_write()`.
-- `board_audio` still initializes the ES8311 in full-duplex mode internally,
-  matching the working mic/speaker test, but Mini-CW does not expose mic input.
+- Menu item editing is stubbed/minimal.
+- FATFS, `setting.txt`, USB mass storage, persistence, real paddle/straight-key
+  I/O, full keyer behavior, and service-owned bottom status are not part of
+  this step.
+- Audio and keyer services remain present, but Step 1 UI demo values are not
+  yet sourced from service-owned state.
 
 
 ## LCWO-Inspired Training Modes
@@ -327,438 +295,179 @@ Mini-CW firmware should not write to FATFS at the same time.
 
 ---
 
-## 2. Screen Layout
+## 2. UI Ownership Boundary
 
-Use a **16x12 font**.
-
-A native 16x12 font is preferred instead of scaling up another font.
-
-Screen is divided as:
+The Step 1 UI boundary is:
 
 ```text
-240 x 135
+app_core
+  -> ui_service
+      -> ui_screen
+          -> ui_cardputer_port
+```
 
+Rules:
+
+- `app_core` owns app flow only and calls public `ui_service` APIs.
+- `ui_service` owns UI behavior/state, including normal/global/local view state.
+- `ui_screen` is private to `ui_service` and owns fixed 240x135 layout.
+- `ui_cardputer_port` owns low-level Cardputer display/keyboard access.
+- `app_core` must not include `ui_screen.h` or call `ui_screen_*`.
+
+## 3. Screen Layout
+
+Screen: 240 x 135, 20 visible characters per text row.
+
+```text
 y=0..18      Top bar, 240 x 19
-y=19         1 px separator
-
-y=20..38     Line 1, 240 x 19
-y=39..57     Line 2, 240 x 19
-y=58..76     Line 3, 240 x 19
-y=77..95     Line 4, 240 x 19
-y=96..114    Line 5, 240 x 19
-
-y=115        1 px separator
-y=116..134   Bottom status bar, 240 x 19
+y=19..20     2 px green separator
+y=21..39     Line 1, 240 x 19
+y=40..58     Line 2, 240 x 19
+y=59..77     Line 3, 240 x 19
+y=78..96     Line 4, 240 x 19
+y=97..115    Line 5, 240 x 19
+y=116..134   Bottom bar, 240 x 19, cyan text on black
 ```
 
 Total:
 
 ```text
-19 + 1 + 5*19 + 1 + 19 = 135
+19 + 2 + 5*19 + 19 = 135
 ```
 
-Text width:
-
-```text
-240 / 12 = 20 characters
-```
-
-So each text row should be treated as **20 visible characters max**.
-
-Suggested constants:
+Screen model:
 
 ```c
-#define UI_W 240
-#define UI_H 135
-
-#define UI_FONT_W 12
-#define UI_FONT_H 16
-#define UI_ROW_H 19
-#define UI_COLS 20
-
-#define UI_TOP_Y 0
-#define UI_TOP_H 19
-
-#define UI_SEP1_Y 19
-
-#define UI_LINE1_Y 20
-#define UI_LINE2_Y 39
-#define UI_LINE3_Y 58
-#define UI_LINE4_Y 77
-#define UI_LINE5_Y 96
-
-#define UI_SEP2_Y 115
-
-#define UI_BOTTOM_Y 116
-#define UI_BOTTOM_H 19
-
-#define UI_MODE_LINES 5
+typedef struct {
+    char mode[14];
+    char tone[4];
+    char vol[3];
+    char line[5][21];
+    char key_in[9];
+    char key_out[9];
+    char key_wpm[3];
+} mini_cw_screen_t;
 ```
 
----
+`ui_screen` formats top and bottom rows internally. `app_core` and
+`ui_service` should not preformat those full rows.
 
-## 3. Top Bar
+## 4. Top, Middle, Bottom Rows
 
-Current top bar:
+Top row format:
 
 ```text
-M:Keyer     Setting
+[mode:13] [tone:3] [vol:2]
 ```
 
-Meaning:
+Example:
 
 ```text
-M:Keyer   = current mode
-Setting   = literal text label
+Keyer         700 40
 ```
 
-Important decision:
+Middle lines are used for normal mode display, global menu display, or local
+mode-specific menu display.
+
+Bottom row format:
 
 ```text
-"Setting" is shown literally.
-It is not a summary of current setting values.
+[KeyIn:8] [KeyOut:8] [KeyInWPM:2]
 ```
 
-User action:
+Example:
 
 ```text
-S enters setting modification/list mode for the current mode.
+Paddle   Paddle   20
 ```
 
-Later we may replace `Setting` with icons, but for now use text only.
+The bottom row is drawn as cyan text on black. Step 2 will decide how service
+owned keyer/audio values feed this row.
 
----
-
-## 4. Mode-Dependent Lines
-
-The middle five lines are mode-dependent:
+Expected Step 1 normal demo screen:
 
 ```text
-Line 1
-Line 2
-Line 3
-Line 4
-Line 5
-```
-
-Each mode owns how these five lines are displayed.
-
-Some settings may be displayed in these lines when useful, but the top bar still keeps the literal word `Setting`.
-
-Example Keyer screen:
-
-```text
-M:Keyer     Setting
+Keyer         700 40
 CQ CQ DE AG6AQ
-BUF:HELLO WORLD_
-KEY:IAMBIC B
-OUT:GPIO??
+BUF:
+KEYIN:Paddle
+KEYOUT:Paddle
 READY
-TX:20 T:700Hz V:20
+Paddle   Paddle   20
 ```
 
----
+There is a graphical 2 px green separator below the top bar.
 
-## 5. Bottom Status Bar
+## 5. Global and Local Menus
 
-Current bottom status:
-
-```text
-TX:20 T:700Hz V:20
-```
-
-Meaning:
-
-```text
-TX:20     TX keyer WPM
-T:700Hz   sidetone tone frequency
-V:20      sidetone volume
-```
-
-This is **not general mode settings**.
-
-It is live TX/keyer/audio status.
-
-Ownership:
-
-```text
-TX:20     owned by keyer_service
-T:700Hz   owned by audio_service
-V:20      owned by audio_service
-```
-
-UI should only compose the display string.
-
-Example:
+The UI has three view states:
 
 ```c
-snprintf(bottom, sizeof(bottom),
-         "TX:%u T:%uHz V:%u",
-         keyer_get_tx_wpm(),
-         audio_get_tone_hz(),
-         audio_get_volume());
+typedef enum {
+    UI_VIEW_NORMAL = 0,
+    UI_VIEW_GLOBAL_MENU,
+    UI_VIEW_LOCAL_MENU,
+} ui_view_t;
 ```
 
----
+Global menu:
 
-## 6. Bottom Quick Modification Mode
+- `Ctrl` enters/exits global menu mode.
+- Number keys `1` to `5` select visible items.
+- Up/Down page through global menu pages.
+- Left/Right may change values later.
 
-User presses:
+Local menu:
+
+- `Fn` enters/exits local mode-specific menu mode.
+- It is separate from the global menu.
+- Practice mode has no local settings.
+- Keyer and Lessons local settings may remain stubbed for Step 1.
+
+Mini-CW uses the Mini-FT8 menu interaction style, but keeps global and local
+menus as separate UI states.
+
+Global menu page 1:
 
 ```text
-Fn
+1 Mode:Keyer
+2 Tone:700Hz
+3 Volume:40
+4 KeyIn:Paddle
+5 KeyIn WPM:20
 ```
 
-to enter bottom status modification mode.
-
-In this mode:
+Global menu page 2:
 
 ```text
-1 / 2  adjust TX WPM -/+
-3 / 4  adjust Tone -/+
-5 / 6  adjust Volume -/+
+1 KeyOut:Paddle
+2 KeyOut WPM:20
+3 Sleep/Batt 90%
+4 Date
+5 Time
 ```
 
-Volume adjustment should give audio feedback.
-
-Exit bottom modification mode:
+No local settings view:
 
 ```text
-Fn again
-or
-tick-mark / `
+No local settings
 ```
 
-Ownership rule:
+## 6. Ownership Separation
+
+Current Step 1 UI values are demo/framework values only.
+
+Later ownership:
 
 ```text
-1/2 dispatch to keyer_service
-3/4 dispatch to audio_service
-5/6 dispatch to audio_service and play feedback beep
+keyer_service owns keyer speed/key input/output data
+audio_service owns tone and volume
+storage_service owns persistence
 ```
 
-Suggested display while editing:
-
-```text
-1/2 TX 3/4 T 5/6 V
-```
-
----
-
-## 7. Boot and Input Model
-
-Default after boot:
-
-```text
-Mini-CW enters Keyer mode
-```
-
-Later this may become:
-
-```text
-Mini-CW enters previous saved mode
-```
-
-but this will be specified later.
-
-In Keyer mode:
-
-```text
-All normal keystrokes are taken literally
-```
-
-That means typed characters are used for Morse/text input.
-
-Exceptions:
-
-```text
-tick-mark / `   exits Keyer mode and waits for command
-Fn              enters bottom quick modification mode
-```
-
-So in Keyer mode, keys like `M` and `S` are not commands. They are literal input unless the user first presses tick-mark.
-
----
-
-## 8. Command-Wait State
-
-Pressing tick-mark exits Keyer input and enters command-wait state.
-
-Currently defined commands:
-
-```text
-M / m   open command/menu list
-S / s   open current-mode settings list
-```
-
-Unknown commands can be ignored or show a short message later.
-
----
-
-## 9. M/m Command List
-
-After:
-
-```text
-` then M
-```
-
-Mini-CW shows the command/menu list.
-
-The command list uses numbered choices:
-
-```text
-1 to 5
-```
-
-with page up/down support later.
-
-For now, only show:
-
-```text
-1 Keyer
-```
-
-Example:
-
-```text
-M:Menu      Setting
-1 Keyer
-
-
-
-
-TX:20 T:700Hz V:20
-```
-
-Selecting:
-
-```text
-1
-```
-
-returns/enters Keyer mode.
-
-Later, this can expand to:
-
-```text
-1 Keyer
-2 Lessons
-3 MorseMachine
-4 Plain Text
-5 Words
-```
-
-Page 2 could later hold Callsign, Files, About, etc.
-
----
-
-## 10. S/s Settings List
-
-After:
-
-```text
-` then S
-```
-
-Mini-CW shows the settings list for the **current mode**.
-
-This should be similar to Mini-FT8 menu style:
-
-```text
-numbered items 1-5
-page up/down if needed
-```
-
-Important distinction:
-
-```text
-S settings are mode-specific settings.
-Fn bottom edit is for live TX/audio controls.
-```
-
-So `TX:20 T:700Hz V:20` should not be treated as normal mode settings.
-
-Possible future Keyer settings:
-
-```text
-1 Key Type:IambicB
-2 Auto Space:On
-3 TX Buffer:On
-4 Paddle Rev:Off
-5 Save Mode:Keyer
-```
-
-Possible future Lesson settings:
-
-```text
-1 RX WPM:20
-2 Code WPM:20
-3 Eff WPM:12
-4 Lesson:03
-5 Repeat:On
-```
-
----
-
-## 11. Settings Separation
-
-We now have three categories.
-
-### A. Live TX/audio controls
-
-Shown in bottom bar:
-
-```text
-TX:20 T:700Hz V:20
-```
-
-Owned by:
-
-```text
-TX WPM     keyer_service
-Tone       audio_service
-Volume     audio_service
-```
-
-Changed by:
-
-```text
-Fn quick modification mode
-```
-
-### B. Mode-specific settings
-
-Stored in `setting.txt`.
-
-Changed by:
-
-```text
-` + S
-```
-
-Examples:
-
-```text
-lesson number
-word list
-keyer behavior
-callsign weighting
-RX WPM
-code WPM
-effective WPM
-```
-
-### C. Global/app settings
-
-Also likely stored in `setting.txt`, for example:
-
-```text
-boot mode
-last mode
-display behavior
-USB storage behavior
-```
+Do not implement FATFS, `setting.txt`, USB mass storage, persistence, real
+audio ownership transfer, real keyer ownership transfer, paddle/straight-key
+I/O, or full keyer behavior in this step.
 
 ---
 
@@ -821,113 +530,66 @@ volume    audio_service
 
 We should do this in small steps.
 
-### Step 1: Lock the display layout
+### Step 1: UI layout and menu framework
 
-Implement the fixed 240x135 UI layout:
+Implement the fixed 240x135 UI layout and ownership boundary:
 
 ```text
-top bar
-separator
-five content lines
-separator
-bottom bar
+app_core -> ui_service -> ui_screen -> ui_cardputer_port
 ```
 
-Create a simple screen model:
+Create the field-based screen model:
 
 ```c
 typedef struct {
-    char top[21];
+    char mode[14];
+    char tone[4];
+    char vol[3];
     char line[5][21];
-    char bottom[21];
+    char key_in[9];
+    char key_out[9];
+    char key_wpm[3];
 } mini_cw_screen_t;
 ```
 
 Goal of Step 1:
 
 ```text
-Render static demo screen correctly.
-No input logic yet.
-No settings yet.
+Render the normal demo screen correctly.
+Keep ui_screen private to ui_service.
+Add separate UI_VIEW_GLOBAL_MENU and UI_VIEW_LOCAL_MENU framework.
+Ctrl toggles global menu; Fn toggles local menu.
+Menu item editing can remain stubbed.
 ```
 
 Demo screen:
 
 ```text
-M:Keyer     Setting
+Keyer         700 40
 CQ CQ DE AG6AQ
 BUF:
-KEY:IAMBIC B
-OUT:GPIO??
+KEYIN:Paddle
+KEYOUT:Paddle
 READY
-TX:20 T:700Hz V:20
+Paddle   Paddle   20
 ```
-
----
 
 ### Step 2: Add service ownership for bottom status
 
-Create or refine:
+Move top/bottom displayed values to their future service owners without
+changing the UI contract:
 
 ```text
-keyer_service
-audio_service
-```
-
-Ownership:
-
-```text
-keyer_service owns TX WPM
+keyer_service owns key input/output mode and WPM data
 audio_service owns tone and volume
+ui_service composes public UI state from service APIs
 ```
 
-UI asks services for values and composes:
-
-```text
-TX:20 T:700Hz V:20
-```
-
-Goal of Step 2:
-
-```text
-Bottom status is generated from services, not hardcoded in UI.
-```
+Do not put low-level display or keyboard calls outside `ui_cardputer_port`.
 
 ---
 
-### Step 3: Implement Fn bottom quick-edit
-
-Input behavior:
-
-```text
-Fn enters bottom edit mode
-1/2 TX WPM -/+
-3/4 Tone -/+
-5/6 Volume -/+
-Fn exits
-tick-mark exits
-```
-
-Goal of Step 3:
-
-```text
-Live bottom values change on screen.
-Volume change gives audio feedback.
-```
-
-This is a good early test because it checks:
-
-```text
-keyboard input
-UI redraw
-keyer_service ownership
-audio_service ownership
-audio feedback
-```
-
----
-
-### Step 4: Implement Keyer mode literal input
+### Step 3: Implement Keyer mode literal input
 
 Default boot mode:
 
@@ -940,10 +602,11 @@ Input rule:
 ```text
 normal keys go to keyer/text buffer
 tick-mark enters command-wait state
-Fn enters bottom edit state
+Ctrl enters global menu
+Fn enters local mode menu
 ```
 
-Goal of Step 4:
+Goal of Step 3:
 
 ```text
 Typing letters appears in buffer or is passed to keyer logic.
@@ -952,7 +615,7 @@ M and S are literal characters unless tick-mark was pressed first.
 
 ---
 
-### Step 5: Implement command-wait state
+### Step 4: Implement command-wait state
 
 After tick-mark:
 
@@ -962,7 +625,7 @@ S/s opens current-mode settings list
 tick-mark cancels/returns
 ```
 
-Goal of Step 5:
+Goal of Step 4:
 
 ```text
 vi-like command entry works.
@@ -970,7 +633,7 @@ vi-like command entry works.
 
 ---
 
-### Step 6: Implement M/m command list
+### Step 5: Implement M/m command list
 
 For now, command list only has:
 
@@ -980,7 +643,7 @@ For now, command list only has:
 
 Selecting `1` returns to Keyer mode.
 
-Goal of Step 6:
+Goal of Step 5:
 
 ```text
 Menu page framework works with numbered 1-5 choices.
@@ -990,7 +653,7 @@ Page up/down can be stubbed for now.
 
 ---
 
-### Step 7: Implement S/s settings list framework
+### Step 6: Expand settings list framework
 
 For now, show current-mode settings page.
 
@@ -1004,7 +667,7 @@ Even if not all settings are editable yet, implement the list style:
 5 ...
 ```
 
-Goal of Step 7:
+Goal of Step 6:
 
 ```text
 Settings page framework exists and looks like Mini-FT8 menu style.
@@ -1079,4 +742,3 @@ Implement fixed UI layout and static demo rendering.
 ```
 
 Do not add settings, FATFS, command mode, or Fn editing yet. Once the screen layout is solid, every later feature has a stable place to display itself.
-

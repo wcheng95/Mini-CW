@@ -1,9 +1,10 @@
 /*
  * ui_screen
  *
- * Responsibility: Renders fixed-size Mini-CW text screens.
- * Hardware ownership: display drawing through the UI service component. This
- * is a private ui_service helper; app_core should use ui_service APIs only.
+ * Responsibility: Owns fixed 240x135 Mini-CW layout and rendering decisions.
+ * Hardware ownership: none. Low-level display access stays in
+ * ui_cardputer_port. This is a private ui_service helper; app_core must use
+ * ui_service APIs only.
  */
 
 #pragma once
@@ -23,25 +24,38 @@ extern "C" {
 #define UI_TOP_Y 0
 #define UI_TOP_H 19
 
-#define UI_SEP1_Y 19
+#define UI_SEP_Y 19
+#define UI_SEP_H 2
 
-#define UI_LINE1_Y 20
-#define UI_LINE2_Y 39
-#define UI_LINE3_Y 58
-#define UI_LINE4_Y 77
-#define UI_LINE5_Y 96
-
-#define UI_SEP2_Y 115
+#define UI_LINE1_Y 21
+#define UI_LINE2_Y 40
+#define UI_LINE3_Y 59
+#define UI_LINE4_Y 78
+#define UI_LINE5_Y 97
 
 #define UI_BOTTOM_Y 116
 #define UI_BOTTOM_H 19
 
 #define UI_MODE_LINES 5
 
+#define UI_TOP_MODE_W 13
+#define UI_TOP_TONE_W 3
+#define UI_TOP_VOL_W 2
+
+#define UI_BOTTOM_KEYIN_W 8
+#define UI_BOTTOM_KEYOUT_W 8
+#define UI_BOTTOM_WPM_W 2
+
 typedef struct {
-    char top[UI_COLS + 1];
+    char mode[UI_TOP_MODE_W + 1];
+    char tone[UI_TOP_TONE_W + 1];
+    char vol[UI_TOP_VOL_W + 1];
+
     char line[UI_MODE_LINES][UI_COLS + 1];
-    char bottom[UI_COLS + 1];
+
+    char key_in[UI_BOTTOM_KEYIN_W + 1];
+    char key_out[UI_BOTTOM_KEYOUT_W + 1];
+    char key_wpm[UI_BOTTOM_WPM_W + 1];
 } mini_cw_screen_t;
 
 void ui_screen_init(void);

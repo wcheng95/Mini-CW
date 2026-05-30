@@ -14,13 +14,9 @@ extern "C" {
 #endif
 
 typedef enum {
-    APP_MODE_TONE_TEST = 0,
-    APP_MODE_RX_PRACTICE,
-    APP_MODE_TX_PRACTICE,
-    APP_MODE_CALLSIGN,
-    APP_MODE_QSO,
-    APP_MODE_STATS,
-    APP_MODE_MENU,
+    APP_MODE_PRACTICE = 0,
+    APP_MODE_KEYER,
+    APP_MODE_LESSONS,
 } app_mode_t;
 
 void app_core_init(void);
