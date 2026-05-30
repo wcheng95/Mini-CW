@@ -1,3 +1,8 @@
+# Make an adaptor
+- KeyIn: G13-Tip G15-Ring (to paddle)
+- KeyOut: G3-Tip G6-Ring (to radio)
+- Debug: G4-Tx G5-Rx (not required for nornal use)
+
 # Mini-CW
 
 Mini-CW is an ESP-IDF project for a standalone CW/Morse trainer on M5Stack
