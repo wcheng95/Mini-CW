@@ -7,6 +7,9 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "private_include"
     PRIV_REQUIRES
         M5Cardputer
+        audio_service
         freertos
+        keyer_service
         log
+        platform_hal
 )

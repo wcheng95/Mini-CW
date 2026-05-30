@@ -50,6 +50,7 @@ void ui_cardputer_port_display_print_text(int x,
                                           const char *text,
                                           ui_cardputer_port_color_t fg,
                                           ui_cardputer_port_color_t bg);
+void ui_cardputer_port_display_sleep(void);
 
 #ifdef __cplusplus
 }

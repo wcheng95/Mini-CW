@@ -22,6 +22,13 @@ typedef enum {
 } keyer_input_mode_t;
 
 typedef enum {
+    KEYER_IO_PADDLE = 0,
+    KEYER_IO_PADDLE_R,
+    KEYER_IO_SK,
+    KEYER_IO_SK_MONO,
+} keyer_io_mode_t;
+
+typedef enum {
     KEYER_EVENT_NONE = 0,
     KEYER_EVENT_DIT,
     KEYER_EVENT_DAH,
@@ -38,6 +45,20 @@ typedef struct {
 } keyer_event_t;
 
 void keyer_service_init(void);
+keyer_io_mode_t keyer_service_get_key_in_mode(void);
+void keyer_service_set_key_in_mode(keyer_io_mode_t mode);
+void keyer_service_cycle_key_in_mode(int direction);
+keyer_io_mode_t keyer_service_get_key_out_mode(void);
+void keyer_service_set_key_out_mode(keyer_io_mode_t mode);
+void keyer_service_cycle_key_out_mode(int direction);
+uint8_t keyer_service_get_key_in_wpm(void);
+void keyer_service_set_key_in_wpm(uint8_t wpm);
+void keyer_service_adjust_key_in_wpm(int delta);
+uint8_t keyer_service_get_key_out_wpm(void);
+void keyer_service_set_key_out_wpm(uint8_t wpm);
+void keyer_service_adjust_key_out_wpm(int delta);
+const char *keyer_service_io_mode_label(keyer_io_mode_t mode);
+
 void keyer_service_set_input_mode(keyer_input_mode_t mode);
 uint16_t keyer_service_get_tx_wpm(void);
 void keyer_service_set_tx_wpm(uint16_t wpm);

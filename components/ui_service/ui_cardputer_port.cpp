@@ -190,3 +190,12 @@ void ui_cardputer_port_display_print_text(int x,
     display.setCursor(x, y);
     display.print(text ? text : "");
 }
+
+void ui_cardputer_port_display_sleep(void)
+{
+    if (!s_initialized) {
+        return;
+    }
+
+    M5Cardputer.Display.sleep();
+}

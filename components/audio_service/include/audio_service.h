@@ -22,6 +22,7 @@ uint8_t audio_service_get_volume(void);
 void audio_service_set_tone_hz(uint16_t tone_hz);
 void audio_service_adjust_tone_hz(int delta_hz);
 void audio_service_adjust_volume(int delta);
+void audio_service_play_feedback_beep(void);
 void audio_service_play_feedback_tone(void);
 void audio_cw_set_pitch(uint16_t hz);
 void audio_cw_set_wpm(uint8_t wpm);

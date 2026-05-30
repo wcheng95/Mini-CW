@@ -36,7 +36,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_TASK_STACK_BYTES 6144
 #define AUDIO_CW_COMMAND_TEXT_MAX 64
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
-#define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 20
+#define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 40
 #define AUDIO_SERVICE_MAX_VOLUME_PERCENT 99
 #define AUDIO_SERVICE_FEEDBACK_TONE_MS 50
 #define AUDIO_CW_TWO_PI 6.28318530717958647692f
@@ -658,7 +658,7 @@ void audio_service_adjust_volume(int delta)
     audio_service_set_volume((uint8_t)next);
 }
 
-void audio_service_play_feedback_tone(void)
+void audio_service_play_feedback_beep(void)
 {
     audio_cw_command_t command = {
         .type = AUDIO_CW_COMMAND_FEEDBACK_TONE,
@@ -666,6 +666,11 @@ void audio_service_play_feedback_tone(void)
 
     ESP_LOGI(TAG, "queue feedback tone: %u ms", (unsigned)AUDIO_SERVICE_FEEDBACK_TONE_MS);
     audio_cw_queue_command(&command);
+}
+
+void audio_service_play_feedback_tone(void)
+{
+    audio_service_play_feedback_beep();
 }
 
 void audio_cw_set_pitch(uint16_t hz)

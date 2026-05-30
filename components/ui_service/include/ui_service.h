@@ -24,6 +24,7 @@ typedef enum {
     UI_INPUT_EVENT_WPM_DOWN,
     UI_INPUT_EVENT_PITCH_UP,
     UI_INPUT_EVENT_PITCH_DOWN,
+    UI_INPUT_EVENT_SLEEP_REQUEST,
 } ui_input_event_type_t;
 
 typedef struct {
@@ -37,6 +38,7 @@ void ui_service_enter_global_menu(void);
 void ui_service_exit_global_menu(void);
 void ui_service_enter_local_menu(void);
 void ui_service_exit_local_menu(void);
+void ui_service_prepare_for_sleep(void);
 ui_input_event_t ui_service_poll_input(void);
 
 #ifdef __cplusplus

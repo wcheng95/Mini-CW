@@ -46,6 +46,15 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         audio_cw_stop();
         return;
     }
+
+    if (event.type == UI_INPUT_EVENT_SLEEP_REQUEST) {
+        ESP_LOGI(TAG, "sleep input received");
+        audio_cw_stop();
+        ui_service_prepare_for_sleep();
+        vTaskDelay(pdMS_TO_TICKS(100));
+        platform_hal_enter_deep_sleep();
+        return;
+    }
 }
 
 void app_core_init(void)
@@ -55,14 +64,14 @@ void app_core_init(void)
     ESP_LOGI(TAG, "init: platform_hal");
     platform_hal_init();
 
-    ESP_LOGI(TAG, "init: ui_service");
-    ui_service_init();
-
     ESP_LOGI(TAG, "init: audio_service");
     audio_service_init();
 
     ESP_LOGI(TAG, "init: keyer_service");
     keyer_service_init();
+
+    ESP_LOGI(TAG, "init: ui_service");
+    ui_service_init();
 
     ESP_LOGI(TAG, "init: storage_service");
     storage_service_init();
