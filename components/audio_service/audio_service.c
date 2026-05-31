@@ -36,6 +36,29 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_TONE_CHUNK_MS 10
 #define AUDIO_CW_ENVELOPE_MS 5
 #define AUDIO_CW_STOP_SILENCE_MS 80
+/*
+ * Keyer tones (paddle elements and the straight-key release) must keep feeding
+ * the codec until the I2S DMA has fully clocked out before muting, otherwise
+ * the mute silences the ~30 ms still queued in the DMA (board_audio uses
+ * dma_desc_num=6 * dma_frame_num=240 = 1440 frames = 30 ms at 48 kHz). That
+ * truncates the raised-cosine release (clicks) and, at 30 WPM where a dit is
+ * only 40 ms, swallows most of the element (noise). Drain with a margin over
+ * the DMA depth. NOTE: validation value for the mute/drain-race hypothesis;
+ * the real fix is continuous playback with an idle mute, which removes this
+ * per-element silence entirely.
+ */
+#define AUDIO_CW_KEYER_DRAIN_MS 40
+/*
+ * Idle "gate": the codec output is muted only after this long with no audio,
+ * never between elements. Muting/unmuting the ES8311 output stage pops, so
+ * toggling it per dit/dah clicks on every key edge; holding it enabled across
+ * a sending burst removes that click. Keep this longer than the gaps that
+ * occur mid-sending (inter-word spacing, brief pauses) so it does not re-mute
+ * in the middle of a QSO -- the only remaining edge is the first element after
+ * a real idle, which costs one unmute pop in exchange for not draining the
+ * battery while the rig sits unused.
+ */
+#define AUDIO_CW_IDLE_MUTE_MS 5000
 #define AUDIO_CW_AMPLITUDE 12000
 #define AUDIO_CW_TASK_STACK_BYTES 6144
 #define AUDIO_CW_COMMAND_TEXT_MAX 1024
@@ -140,6 +163,7 @@ static SemaphoreHandle_t s_command_mutex;
 static audio_cw_command_t s_pending_command;
 static int16_t s_sin_quarter[DDS_QTABLE_SIZE + 1];
 static uint64_t s_phase;
+static volatile bool s_codec_active;
 
 static audio_output_port_config_t s_output_config = {
     .sample_rate_hz = AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ,
@@ -326,6 +350,23 @@ static void audio_service_set_output_muted(bool muted)
     }
 
     audio_output_port_set_muted(muted);
+}
+
+/*
+ * Single owner of the codec mute state. Transition-guarded so the audio task
+ * can call it before every element without re-toggling the output stage: the
+ * codec is unmuted on the first element of a burst and stays enabled until the
+ * idle gate (or a hard stop) releases it. All mute/unmute outside init goes
+ * through here so s_codec_active always reflects the hardware.
+ */
+static void audio_cw_set_codec_active(bool active)
+{
+    if (s_codec_active == active) {
+        return;
+    }
+
+    s_codec_active = active;
+    audio_service_set_output_muted(!active);
 }
 
 static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
@@ -710,7 +751,7 @@ static uint32_t audio_cw_command_stop_silence_ms(const audio_cw_command_t *comma
     switch (command->type) {
     case AUDIO_CW_COMMAND_TONE_MS:
     case AUDIO_CW_COMMAND_CONTINUOUS_TONE:
-        return 0;
+        return AUDIO_CW_KEYER_DRAIN_MS;
     case AUDIO_CW_COMMAND_TEXT:
     case AUDIO_CW_COMMAND_CHAR:
     case AUDIO_CW_COMMAND_PATTERN:
@@ -757,7 +798,21 @@ static void audio_cw_task(void *arg)
     (void)arg;
 
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        /*
+         * While the codec is enabled, wake after the idle timeout so silence
+         * can release it (the gate). While it is already muted there is nothing
+         * to release, so block until the next command. The codec is muted only
+         * on this idle path, never between elements, so key edges cannot click.
+         */
+        uint32_t notified = ulTaskNotifyTake(pdTRUE,
+                                             s_codec_active
+                                                 ? pdMS_TO_TICKS(AUDIO_CW_IDLE_MUTE_MS)
+                                                 : portMAX_DELAY);
+
+        if (notified == 0) {
+            audio_cw_set_codec_active(false);
+            continue;
+        }
 
         for (;;) {
             audio_cw_command_t command;
@@ -768,13 +823,12 @@ static void audio_cw_task(void *arg)
             s_stop_requested = false;
             s_hard_stop_requested = false;
             s_busy = true;
-            audio_service_set_output_muted(false);
+            audio_cw_set_codec_active(true);
             audio_cw_run_command(&command);
             uint32_t stop_silence_ms = audio_cw_command_stop_silence_ms(&command);
             if (stop_silence_ms > 0) {
                 audio_cw_write_silence_ms(stop_silence_ms, false);
             }
-            audio_service_set_output_muted(true);
             if (command.type == AUDIO_CW_COMMAND_CONTINUOUS_TONE) {
                 s_sidetone_latched = false;
             }
@@ -811,13 +865,13 @@ static void audio_cw_queue_command(const audio_cw_command_t *command)
     s_stop_requested = false;
     s_hard_stop_requested = false;
     s_busy = true;
-    audio_service_set_output_muted(false);
+    audio_cw_set_codec_active(true);
     audio_cw_run_command(command);
     uint32_t stop_silence_ms = audio_cw_command_stop_silence_ms(command);
     if (stop_silence_ms > 0) {
         audio_cw_write_silence_ms(stop_silence_ms, false);
     }
-    audio_service_set_output_muted(true);
+    audio_cw_set_codec_active(false);
     if (command->type == AUDIO_CW_COMMAND_CONTINUOUS_TONE) {
         s_sidetone_latched = false;
     }
@@ -1098,7 +1152,7 @@ static void audio_cw_stop(void)
     s_hard_stop_requested = true;
     s_stop_requested = true;
     audio_cw_clear_pending_command();
-    audio_service_set_output_muted(true);
+    audio_cw_set_codec_active(false);
 
     if (s_audio_task != NULL) {
         xTaskNotifyGive(s_audio_task);
