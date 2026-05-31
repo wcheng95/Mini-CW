@@ -23,6 +23,9 @@ bool storage_session_log_append(const char *line);
 bool storage_lesson_load(cw_lesson_config_t *config, cw_lesson_result_t *result);
 bool storage_lesson_save_config(const cw_lesson_config_t *config);
 bool storage_lesson_save_result(const cw_lesson_result_t *result);
+bool storage_word_load(cw_word_config_t *config, cw_word_result_t *result);
+bool storage_word_save_config(const cw_word_config_t *config);
+bool storage_word_save_result(const cw_word_result_t *result);
 
 #ifdef __cplusplus
 }

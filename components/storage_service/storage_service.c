@@ -57,3 +57,25 @@ bool storage_lesson_save_result(const cw_lesson_result_t *result)
     ESP_LOGI(TAG, "lesson result save skipped: persistence disabled");
     return false;
 }
+
+bool storage_word_load(cw_word_config_t *config, cw_word_result_t *result)
+{
+    (void)config;
+    (void)result;
+    ESP_LOGI(TAG, "word load skipped: persistence disabled");
+    return false;
+}
+
+bool storage_word_save_config(const cw_word_config_t *config)
+{
+    (void)config;
+    ESP_LOGI(TAG, "word config save skipped: persistence disabled");
+    return false;
+}
+
+bool storage_word_save_result(const cw_word_result_t *result)
+{
+    (void)result;
+    ESP_LOGI(TAG, "word result save skipped: persistence disabled");
+    return false;
+}

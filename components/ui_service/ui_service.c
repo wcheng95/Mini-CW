@@ -11,6 +11,11 @@
 #include "ui_cardputer_port.h"
 #include "ui_screen.h"
 
+/*
+ * ui_service may read service state for rendering only.
+ * It must not call non-UI mutator APIs; setting changes are emitted as
+ * ui_input_event_t and applied by app_core.
+ */
 #include "audio_service.h"
 #include "cw_trainer_service.h"
 #include "esp_log.h"
@@ -40,6 +45,10 @@ typedef enum {
     UI_EDIT_LESSON_CODE_WPM,
     UI_EDIT_LESSON_EFFECTIVE_WPM,
     UI_EDIT_LESSON_GROUP_LEN,
+    UI_EDIT_WORD_SPEED,
+    UI_EDIT_WORD_MIN_CHAR_WPM,
+    UI_EDIT_WORD_LESSON,
+    UI_EDIT_WORD_MAX_LEN,
 } ui_edit_target_t;
 
 typedef struct {
@@ -55,6 +64,9 @@ typedef struct {
 static const ui_input_event_t UI_EVENT_NONE = {
     .type = UI_INPUT_EVENT_NONE,
     .key = '\0',
+    .setting = UI_SETTING_NONE,
+    .value = 0,
+    .delta = 0,
 };
 
 static ui_service_state_t s_ui = {
@@ -77,6 +89,9 @@ static bool s_cardputer_ready;
 #define UI_WPM_STEP 1
 
 static void ui_service_render_current_view(void);
+static void ui_service_set_event(ui_input_event_t *out_event,
+                                 ui_input_event_type_t type,
+                                 char key);
 
 static bool ui_service_mode_is_valid(ui_service_mode_t mode)
 {
@@ -92,6 +107,8 @@ static const char *ui_service_mode_name(ui_service_mode_t mode)
         return "Keyer";
     case UI_SERVICE_MODE_LESSONS:
         return "Lessons";
+    case UI_SERVICE_MODE_WORDS:
+        return "Words";
     case UI_SERVICE_MODE_SYSTEM:
         return "System";
     default:
@@ -138,14 +155,6 @@ static int ui_service_clamp_int(int value, int min_value, int max_value)
     return value;
 }
 
-static bool ui_service_edit_target_is_lesson(ui_edit_target_t target)
-{
-    return target == UI_EDIT_LESSON || target == UI_EDIT_LESSON_DURATION ||
-           target == UI_EDIT_LESSON_CODE_WPM ||
-           target == UI_EDIT_LESSON_EFFECTIVE_WPM ||
-           target == UI_EDIT_LESSON_GROUP_LEN;
-}
-
 static bool ui_service_is_editing_item(uint8_t item)
 {
     return s_ui.edit_target != UI_EDIT_NONE && s_ui.edit_item == item;
@@ -180,36 +189,6 @@ static int ui_service_read_battery_percent(void)
     return ui_service_clamp_int(percent, 0, 100);
 }
 
-static void ui_service_set_lesson_config_value(ui_edit_target_t target, int value)
-{
-    cw_lesson_config_t config = *cw_trainer_lesson_get_config();
-
-    switch (target) {
-    case UI_EDIT_LESSON:
-        config.lesson = (uint8_t)value;
-        break;
-    case UI_EDIT_LESSON_DURATION:
-        config.duration_min = (uint8_t)value;
-        break;
-    case UI_EDIT_LESSON_CODE_WPM:
-        config.code_wpm = (uint8_t)value;
-        break;
-    case UI_EDIT_LESSON_EFFECTIVE_WPM:
-        config.effective_wpm = (uint8_t)value;
-        break;
-    case UI_EDIT_LESSON_GROUP_LEN:
-        config.group_len = (uint8_t)value;
-        break;
-    case UI_EDIT_NONE:
-    case UI_EDIT_VOLUME:
-    case UI_EDIT_KEY_IN_WPM:
-    default:
-        break;
-    }
-
-    cw_trainer_lesson_set_config(&config);
-}
-
 static int ui_service_edit_min(ui_edit_target_t target)
 {
     switch (target) {
@@ -226,6 +205,13 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return UI_WPM_MIN;
     case UI_EDIT_LESSON_GROUP_LEN:
         return 0;
+    case UI_EDIT_WORD_SPEED:
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+        return UI_WPM_MIN;
+    case UI_EDIT_WORD_LESSON:
+        return 9;
+    case UI_EDIT_WORD_MAX_LEN:
+        return 2;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -248,6 +234,13 @@ static int ui_service_edit_max(ui_edit_target_t target)
         return 40;
     case UI_EDIT_LESSON_GROUP_LEN:
         return 7;
+    case UI_EDIT_WORD_SPEED:
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+        return 40;
+    case UI_EDIT_WORD_LESSON:
+        return 40;
+    case UI_EDIT_WORD_MAX_LEN:
+        return 15;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -266,6 +259,10 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_LESSON_CODE_WPM:
     case UI_EDIT_LESSON_EFFECTIVE_WPM:
     case UI_EDIT_LESSON_GROUP_LEN:
+    case UI_EDIT_WORD_SPEED:
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+    case UI_EDIT_WORD_LESSON:
+    case UI_EDIT_WORD_MAX_LEN:
         return 1;
     case UI_EDIT_NONE:
     default:
@@ -299,33 +296,72 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return cw_trainer_lesson_get_config()->effective_wpm;
     case UI_EDIT_LESSON_GROUP_LEN:
         return cw_trainer_lesson_get_config()->group_len;
+    case UI_EDIT_WORD_SPEED:
+        return cw_trainer_word_get_config()->start_wpm;
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+        return cw_trainer_word_get_config()->min_char_wpm;
+    case UI_EDIT_WORD_LESSON:
+        return cw_trainer_word_get_config()->lesson;
+    case UI_EDIT_WORD_MAX_LEN:
+        return cw_trainer_word_get_config()->max_word_len;
     case UI_EDIT_NONE:
     default:
         return 0;
     }
 }
 
-static void ui_service_set_edit_value(ui_edit_target_t target, int value)
+static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
 {
-    value = ui_service_clamp_int(value, ui_service_edit_min(target), ui_service_edit_max(target));
-
     switch (target) {
     case UI_EDIT_VOLUME:
-        audio_service_set_volume((uint8_t)value);
-        break;
+        return UI_INPUT_EVENT_VOLUME_CHANGED;
     case UI_EDIT_KEY_IN_WPM:
-        keyer_service_set_key_in_wpm((uint8_t)value);
-        break;
+        return UI_INPUT_EVENT_KEY_IN_WPM_CHANGED;
     case UI_EDIT_LESSON:
     case UI_EDIT_LESSON_DURATION:
     case UI_EDIT_LESSON_CODE_WPM:
     case UI_EDIT_LESSON_EFFECTIVE_WPM:
     case UI_EDIT_LESSON_GROUP_LEN:
-        ui_service_set_lesson_config_value(target, value);
-        break;
+        return UI_INPUT_EVENT_LESSON_CONFIG_CHANGED;
+    case UI_EDIT_WORD_SPEED:
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+    case UI_EDIT_WORD_LESSON:
+    case UI_EDIT_WORD_MAX_LEN:
+        return UI_INPUT_EVENT_WORD_CONFIG_CHANGED;
     case UI_EDIT_NONE:
     default:
-        break;
+        return UI_INPUT_EVENT_NONE;
+    }
+}
+
+static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t target)
+{
+    switch (target) {
+    case UI_EDIT_VOLUME:
+        return UI_SETTING_VOLUME;
+    case UI_EDIT_KEY_IN_WPM:
+        return UI_SETTING_KEY_IN_WPM;
+    case UI_EDIT_LESSON:
+        return UI_SETTING_LESSON;
+    case UI_EDIT_LESSON_DURATION:
+        return UI_SETTING_LESSON_DURATION;
+    case UI_EDIT_LESSON_CODE_WPM:
+        return UI_SETTING_LESSON_CODE_WPM;
+    case UI_EDIT_LESSON_EFFECTIVE_WPM:
+        return UI_SETTING_LESSON_EFFECTIVE_WPM;
+    case UI_EDIT_LESSON_GROUP_LEN:
+        return UI_SETTING_LESSON_GROUP_LEN;
+    case UI_EDIT_WORD_SPEED:
+        return UI_SETTING_WORD_SPEED;
+    case UI_EDIT_WORD_MIN_CHAR_WPM:
+        return UI_SETTING_WORD_MIN_CHAR_WPM;
+    case UI_EDIT_WORD_LESSON:
+        return UI_SETTING_WORD_LESSON;
+    case UI_EDIT_WORD_MAX_LEN:
+        return UI_SETTING_WORD_MAX_LEN;
+    case UI_EDIT_NONE:
+    default:
+        return UI_SETTING_NONE;
     }
 }
 
@@ -364,7 +400,7 @@ static int ui_service_edit_buffer_value(void)
     return atoi(s_ui.edit_buf);
 }
 
-static ui_edit_target_t ui_service_commit_numeric_edit(void)
+static ui_edit_target_t ui_service_commit_numeric_edit(ui_input_event_t *out_event, char key)
 {
     ui_edit_target_t target = s_ui.edit_target;
     int value;
@@ -374,45 +410,46 @@ static ui_edit_target_t ui_service_commit_numeric_edit(void)
     }
 
     value = ui_service_edit_buffer_value();
-    ui_service_set_edit_value(target, value);
-    ESP_LOGI(TAG, "mode menu edit committed: value=%d", ui_service_get_edit_value(target));
+    value = ui_service_clamp_int(value, ui_service_edit_min(target), ui_service_edit_max(target));
+    ui_service_set_event(out_event, ui_service_edit_event_type(target), key);
+    if (out_event != NULL) {
+        out_event->setting = ui_service_edit_setting_target(target);
+        out_event->value = value;
+        out_event->delta = 0;
+    }
+    ESP_LOGI(TAG, "mode menu edit committed: value=%d", value);
     ui_service_clear_edit();
     return target;
 }
 
-static void ui_service_step_numeric_edit(int delta)
+static ui_edit_target_t ui_service_step_numeric_edit(int delta,
+                                                     ui_input_event_t *out_event,
+                                                     char key)
 {
     int step;
+    int value;
+    ui_edit_target_t target = s_ui.edit_target;
 
     if (s_ui.edit_target == UI_EDIT_NONE) {
-        return;
+        return UI_EDIT_NONE;
     }
 
     step = ui_service_edit_step(s_ui.edit_target);
+    value = ui_service_get_edit_value(s_ui.edit_target) + delta * step;
+    value = ui_service_clamp_int(value,
+                                 ui_service_edit_min(s_ui.edit_target),
+                                 ui_service_edit_max(s_ui.edit_target));
 
-    switch (s_ui.edit_target) {
-    case UI_EDIT_VOLUME:
-        audio_service_adjust_volume(delta * step);
-        audio_service_play_feedback_beep();
-        break;
-    case UI_EDIT_KEY_IN_WPM:
-        keyer_service_adjust_key_in_wpm(delta * step);
-        break;
-    case UI_EDIT_LESSON:
-    case UI_EDIT_LESSON_DURATION:
-    case UI_EDIT_LESSON_CODE_WPM:
-    case UI_EDIT_LESSON_EFFECTIVE_WPM:
-    case UI_EDIT_LESSON_GROUP_LEN:
-        ui_service_set_edit_value(s_ui.edit_target,
-                                  ui_service_get_edit_value(s_ui.edit_target) + delta * step);
-        break;
-    case UI_EDIT_NONE:
-    default:
-        break;
+    ui_service_set_edit_buf_value(value);
+    ui_service_set_event(out_event, ui_service_edit_event_type(target), key);
+    if (out_event != NULL) {
+        out_event->setting = ui_service_edit_setting_target(target);
+        out_event->value = value;
+        out_event->delta = delta * step;
     }
 
-    ui_service_set_edit_buf_value(ui_service_get_edit_value(s_ui.edit_target));
     s_ui.edit_user_digits = false;
+    return target;
 }
 
 static void ui_service_append_edit_digit(char digit)
@@ -462,6 +499,9 @@ static void ui_service_set_event(ui_input_event_t *out_event,
 
     out_event->type = type;
     out_event->key = key;
+    out_event->setting = UI_SETTING_NONE;
+    out_event->value = 0;
+    out_event->delta = 0;
 }
 
 static void ui_service_format_value_line(char *dest,
@@ -574,6 +614,98 @@ static void ui_service_render_lesson_normal(mini_cw_screen_t *screen)
     }
 }
 
+static void ui_service_render_word_normal(mini_cw_screen_t *screen)
+{
+    const cw_word_view_t *view = cw_trainer_word_get_view();
+    char copy_tail[17];
+    char last_tail[13];
+    unsigned attempts;
+
+    if (screen == NULL || view == NULL) {
+        return;
+    }
+
+    switch (view->state) {
+    case CW_WORD_STATE_COPYING:
+        ui_service_copy_tail(copy_tail, sizeof(copy_tail), view->copy_text, view->copy_len);
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Word %02u/%02u %uw",
+                 (unsigned)(view->current_index + 1U),
+                 (unsigned)view->result.total_words,
+                 (unsigned)view->current_wpm);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "Score:%lu Max:%u",
+                 (unsigned long)view->result.score,
+                 (unsigned)view->result.max_wpm);
+        snprintf(screen->line[2], sizeof(screen->line[2]), "Typed:%.14s", copy_tail);
+        if (view->last_sent_word != NULL && view->last_sent_word[0] != '\0') {
+            ui_service_copy_tail(last_tail,
+                                 sizeof(last_tail),
+                                 view->last_sent_word,
+                                 strlen(view->last_sent_word));
+            snprintf(screen->line[3],
+                     sizeof(screen->line[3]),
+                     "%s:%s",
+                     view->last_correct ? "OK" : "NO",
+                     last_tail);
+        } else {
+            ui_service_set_text(screen->line[3], sizeof(screen->line[3]), "Last:-");
+        }
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=check .=play");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "` stop Ctrl menu");
+        break;
+    case CW_WORD_STATE_RESULT:
+        attempts = view->result.attempts > 9999U ? 9999U : view->result.attempts;
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Done S:%lu",
+                 (unsigned long)view->result.score);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "Max:%u OK:%u/%u",
+                 (unsigned)view->result.max_wpm,
+                 (unsigned)view->result.correct_count,
+                 (unsigned)view->result.total_words);
+        snprintf(screen->line[2],
+                 sizeof(screen->line[2]),
+                 "Best:%lu M:%u",
+                 (unsigned long)view->result.best_score,
+                 (unsigned)view->result.best_max_wpm);
+        snprintf(screen->line[3], sizeof(screen->line[3]), "Attempts:%u", attempts);
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=new run");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
+        break;
+    case CW_WORD_STATE_IDLE:
+    case CW_WORD_STATE_READY:
+    default:
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Speed:%u Min:%u",
+                 (unsigned)view->config.start_wpm,
+                 (unsigned)view->config.min_char_wpm);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "L%02u MaxLen:%u",
+                 (unsigned)view->config.lesson,
+                 (unsigned)view->config.max_word_len);
+        snprintf(screen->line[2],
+                 sizeof(screen->line[2]),
+                 "Last S:%lu M:%u",
+                 (unsigned long)view->result.score,
+                 (unsigned)view->result.max_wpm);
+        snprintf(screen->line[3],
+                 sizeof(screen->line[3]),
+                 "Best:%lu M:%u",
+                 (unsigned long)view->result.best_score,
+                 (unsigned)view->result.best_max_wpm);
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=start");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
+        break;
+    }
+}
+
 static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
     unsigned wpm;
@@ -634,6 +766,9 @@ static void ui_service_render_normal(void)
     case UI_SERVICE_MODE_LESSONS:
         ui_service_render_lesson_normal(&screen);
         break;
+    case UI_SERVICE_MODE_WORDS:
+        ui_service_render_word_normal(&screen);
+        break;
     case UI_SERVICE_MODE_PRACTICE:
         ui_service_render_practice_normal(&screen);
         break;
@@ -656,7 +791,7 @@ static void ui_service_render_mode_select(void)
     ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "1 Practice");
     ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Keyer");
     ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3 Lessons");
-    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4 Words");
     ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
     ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 System");
 
@@ -721,6 +856,43 @@ static void ui_service_render_lesson_menu(void)
     ui_screen_render(&screen);
 }
 
+static void ui_service_render_word_menu(void)
+{
+    mini_cw_screen_t screen;
+    const cw_word_config_t *config = cw_trainer_word_get_config();
+
+    ui_service_prepare_screen(&screen);
+
+    ui_service_format_value_line(screen.line[0],
+                                 sizeof(screen.line[0]),
+                                 1U,
+                                 "1 Speed:",
+                                 config->start_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[1],
+                                 sizeof(screen.line[1]),
+                                 2U,
+                                 "2 MinChar:",
+                                 config->min_char_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[2],
+                                 sizeof(screen.line[2]),
+                                 3U,
+                                 "3 Lesson:",
+                                 config->lesson,
+                                 "");
+    ui_service_format_value_line(screen.line[3],
+                                 sizeof(screen.line[3]),
+                                 4U,
+                                 "4 MaxLen:",
+                                 config->max_word_len,
+                                 "");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
+
+    ui_screen_render(&screen);
+}
+
 static void ui_service_render_system_menu(void)
 {
     mini_cw_screen_t screen;
@@ -758,6 +930,9 @@ static void ui_service_render_mode_menu(void)
     switch (s_ui.mode) {
     case UI_SERVICE_MODE_LESSONS:
         ui_service_render_lesson_menu();
+        break;
+    case UI_SERVICE_MODE_WORDS:
+        ui_service_render_word_menu();
         break;
     case UI_SERVICE_MODE_SYSTEM:
         ui_service_render_system_menu();
@@ -876,6 +1051,9 @@ static bool ui_service_handle_mode_select_char(char key, ui_input_event_t *out_e
     case '3':
         mode = UI_SERVICE_MODE_LESSONS;
         break;
+    case '4':
+        mode = UI_SERVICE_MODE_WORDS;
+        break;
     case '6':
         mode = UI_SERVICE_MODE_SYSTEM;
         break;
@@ -916,6 +1094,16 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
         } else if (item == 5U) {
             target = UI_EDIT_LESSON_GROUP_LEN;
         }
+    } else if (s_ui.mode == UI_SERVICE_MODE_WORDS) {
+        if (item == 1U) {
+            target = UI_EDIT_WORD_SPEED;
+        } else if (item == 2U) {
+            target = UI_EDIT_WORD_MIN_CHAR_WPM;
+        } else if (item == 3U) {
+            target = UI_EDIT_WORD_LESSON;
+        } else if (item == 4U) {
+            target = UI_EDIT_WORD_MAX_LEN;
+        }
     }
 
     if (out_target != NULL) {
@@ -927,21 +1115,12 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
 
 static bool ui_service_handle_edit_char(char key, ui_input_event_t *out_event)
 {
-    ui_edit_target_t target = s_ui.edit_target;
-
     if (s_ui.edit_target == UI_EDIT_NONE) {
         return false;
     }
 
     if (key == '\n' || key == '\r') {
-        target = ui_service_commit_numeric_edit();
-        if (target == UI_EDIT_VOLUME) {
-            audio_service_play_feedback_beep();
-        }
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
-
+        (void)ui_service_commit_numeric_edit(out_event, key);
         return true;
     }
 
@@ -957,18 +1136,12 @@ static bool ui_service_handle_edit_char(char key, ui_input_event_t *out_event)
     }
 
     if (key == ',') {
-        ui_service_step_numeric_edit(-1);
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
+        (void)ui_service_step_numeric_edit(-1, out_event, key);
         return true;
     }
 
     if (key == '/') {
-        ui_service_step_numeric_edit(1);
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
+        (void)ui_service_step_numeric_edit(1, out_event, key);
         return true;
     }
 
@@ -994,7 +1167,12 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
     }
 
     if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 2U) {
-        keyer_service_cycle_key_in_mode(1);
+        ui_service_set_event(out_event, UI_INPUT_EVENT_KEY_IN_MODE_CHANGED, key);
+        if (out_event != NULL) {
+            out_event->setting = UI_SETTING_KEY_IN_MODE;
+            out_event->value = 0;
+            out_event->delta = 1;
+        }
         return true;
     }
 
@@ -1057,6 +1235,10 @@ static ui_input_event_t ui_service_map_normal_char(char ch)
     } else if (ch == '`' || ch == '\x1B') {
         event.type = UI_INPUT_EVENT_CANCEL;
     } else if (s_ui.mode == UI_SERVICE_MODE_LESSONS && ch >= 32 && ch <= 126) {
+        event.type = UI_INPUT_EVENT_CHAR_INPUT;
+    } else if (s_ui.mode == UI_SERVICE_MODE_WORDS && ch == '.') {
+        event.type = UI_INPUT_EVENT_REPLAY;
+    } else if (s_ui.mode == UI_SERVICE_MODE_WORDS && ch >= 32 && ch <= 126) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
     } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
                ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
@@ -1161,7 +1343,9 @@ ui_input_event_t ui_service_poll_input(void)
         ui_input_event_t menu_event = UI_EVENT_NONE;
 
         if (ui_service_handle_menu_char(port_event.ch, &menu_event)) {
-            ui_service_render_current_view();
+            if (menu_event.type == UI_INPUT_EVENT_NONE) {
+                ui_service_render_current_view();
+            }
         }
 
         if (menu_event.type != UI_INPUT_EVENT_NONE) {
