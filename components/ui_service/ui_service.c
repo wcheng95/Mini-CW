@@ -27,16 +27,14 @@ static const char *TAG = "ui_service";
 
 typedef enum {
     UI_VIEW_NORMAL = 0,
-    UI_VIEW_GLOBAL_MENU,
-    UI_VIEW_LOCAL_MENU,
+    UI_VIEW_MODE_SELECT,
+    UI_VIEW_MODE_MENU,
 } ui_view_t;
 
 typedef enum {
     UI_EDIT_NONE = 0,
-    UI_EDIT_TONE,
     UI_EDIT_VOLUME,
     UI_EDIT_KEY_IN_WPM,
-    UI_EDIT_KEY_OUT_WPM,
     UI_EDIT_LESSON,
     UI_EDIT_LESSON_DURATION,
     UI_EDIT_LESSON_CODE_WPM,
@@ -47,10 +45,8 @@ typedef enum {
 typedef struct {
     ui_service_mode_t mode;
     ui_view_t view;
-    uint8_t global_page;
-    uint8_t local_page;
+    uint8_t menu_page;
     ui_edit_target_t edit_target;
-    uint8_t edit_page;
     uint8_t edit_item;
     char edit_buf[4];
     bool edit_user_digits;
@@ -64,23 +60,15 @@ static const ui_input_event_t UI_EVENT_NONE = {
 static ui_service_state_t s_ui = {
     .mode = UI_SERVICE_MODE_KEYER,
     .view = UI_VIEW_NORMAL,
-    .global_page = 0,
-    .local_page = 0,
+    .menu_page = 0U,
     .edit_target = UI_EDIT_NONE,
-    .edit_page = 0,
-    .edit_item = 0,
+    .edit_item = 0U,
     .edit_buf = "",
     .edit_user_digits = false,
 };
 
 static bool s_cardputer_ready;
 
-#define UI_GLOBAL_PAGE_COUNT 2U
-#define UI_LOCAL_PAGE_COUNT 1U
-
-#define UI_TONE_MIN_HZ 300
-#define UI_TONE_MAX_HZ 999
-#define UI_TONE_STEP_HZ 50
 #define UI_VOLUME_MIN 0
 #define UI_VOLUME_MAX 99
 #define UI_VOLUME_STEP 5
@@ -89,6 +77,11 @@ static bool s_cardputer_ready;
 #define UI_WPM_STEP 1
 
 static void ui_service_render_current_view(void);
+
+static bool ui_service_mode_is_valid(ui_service_mode_t mode)
+{
+    return mode >= UI_SERVICE_MODE_PRACTICE && mode <= UI_SERVICE_MODE_SYSTEM;
+}
 
 static const char *ui_service_mode_name(ui_service_mode_t mode)
 {
@@ -99,6 +92,8 @@ static const char *ui_service_mode_name(ui_service_mode_t mode)
         return "Keyer";
     case UI_SERVICE_MODE_LESSONS:
         return "Lessons";
+    case UI_SERVICE_MODE_SYSTEM:
+        return "System";
     default:
         return "Unknown";
     }
@@ -113,30 +108,21 @@ static void ui_service_set_text(char *dest, size_t dest_size, const char *text)
     snprintf(dest, dest_size, "%s", text ? text : "");
 }
 
-static void ui_service_set_uint_text(char *dest,
-                                     size_t dest_size,
-                                     unsigned value,
-                                     unsigned max_value)
+static void ui_service_copy_fixed_field(char *dest,
+                                        size_t dest_size,
+                                        size_t offset,
+                                        size_t width,
+                                        const char *text)
 {
-    char text[11];
-    size_t len;
+    size_t i = 0;
 
-    if (value > max_value) {
-        value = max_value;
-    }
-
-    snprintf(text, sizeof(text), "%u", value);
-    if (dest == NULL || dest_size == 0U) {
+    if (dest == NULL || offset >= dest_size) {
         return;
     }
 
-    len = strlen(text);
-    if (len >= dest_size) {
-        len = dest_size - 1U;
+    for (; i < width && offset + i + 1U < dest_size && text != NULL && text[i] != '\0'; ++i) {
+        dest[offset + i] = text[i];
     }
-
-    memcpy(dest, text, len);
-    dest[len] = '\0';
 }
 
 static int ui_service_clamp_int(int value, int min_value, int max_value)
@@ -160,6 +146,40 @@ static bool ui_service_edit_target_is_lesson(ui_edit_target_t target)
            target == UI_EDIT_LESSON_GROUP_LEN;
 }
 
+static bool ui_service_is_editing_item(uint8_t item)
+{
+    return s_ui.edit_target != UI_EDIT_NONE && s_ui.edit_item == item;
+}
+
+static void ui_service_clear_edit(void)
+{
+    s_ui.edit_target = UI_EDIT_NONE;
+    s_ui.edit_item = 0U;
+    s_ui.edit_buf[0] = '\0';
+    s_ui.edit_user_digits = false;
+}
+
+static void ui_service_prepare_screen(mini_cw_screen_t *screen)
+{
+    if (screen == NULL) {
+        return;
+    }
+
+    memset(screen, 0, sizeof(*screen));
+    ui_service_set_text(screen->mode, sizeof(screen->mode), ui_service_mode_name(s_ui.mode));
+}
+
+static int ui_service_read_battery_percent(void)
+{
+    int percent = 0;
+
+    if (platform_hal_get_battery_percent(&percent) != ESP_OK) {
+        return 0;
+    }
+
+    return ui_service_clamp_int(percent, 0, 100);
+}
+
 static void ui_service_set_lesson_config_value(ui_edit_target_t target, int value)
 {
     cw_lesson_config_t config = *cw_trainer_lesson_get_config();
@@ -181,10 +201,8 @@ static void ui_service_set_lesson_config_value(ui_edit_target_t target, int valu
         config.group_len = (uint8_t)value;
         break;
     case UI_EDIT_NONE:
-    case UI_EDIT_TONE:
     case UI_EDIT_VOLUME:
     case UI_EDIT_KEY_IN_WPM:
-    case UI_EDIT_KEY_OUT_WPM:
     default:
         break;
     }
@@ -195,12 +213,9 @@ static void ui_service_set_lesson_config_value(ui_edit_target_t target, int valu
 static int ui_service_edit_min(ui_edit_target_t target)
 {
     switch (target) {
-    case UI_EDIT_TONE:
-        return UI_TONE_MIN_HZ;
     case UI_EDIT_VOLUME:
         return UI_VOLUME_MIN;
     case UI_EDIT_KEY_IN_WPM:
-    case UI_EDIT_KEY_OUT_WPM:
         return UI_WPM_MIN;
     case UI_EDIT_LESSON:
         return 1;
@@ -220,12 +235,9 @@ static int ui_service_edit_min(ui_edit_target_t target)
 static int ui_service_edit_max(ui_edit_target_t target)
 {
     switch (target) {
-    case UI_EDIT_TONE:
-        return UI_TONE_MAX_HZ;
     case UI_EDIT_VOLUME:
         return UI_VOLUME_MAX;
     case UI_EDIT_KEY_IN_WPM:
-    case UI_EDIT_KEY_OUT_WPM:
         return UI_WPM_MAX;
     case UI_EDIT_LESSON:
         return 40;
@@ -245,12 +257,9 @@ static int ui_service_edit_max(ui_edit_target_t target)
 static int ui_service_edit_step(ui_edit_target_t target)
 {
     switch (target) {
-    case UI_EDIT_TONE:
-        return UI_TONE_STEP_HZ;
     case UI_EDIT_VOLUME:
         return UI_VOLUME_STEP;
     case UI_EDIT_KEY_IN_WPM:
-    case UI_EDIT_KEY_OUT_WPM:
         return UI_WPM_STEP;
     case UI_EDIT_LESSON:
     case UI_EDIT_LESSON_DURATION:
@@ -266,10 +275,6 @@ static int ui_service_edit_step(ui_edit_target_t target)
 
 static size_t ui_service_edit_max_digits(ui_edit_target_t target)
 {
-    if (target == UI_EDIT_TONE) {
-        return 3U;
-    }
-
     if (target == UI_EDIT_LESSON_DURATION || target == UI_EDIT_LESSON_GROUP_LEN) {
         return 1U;
     }
@@ -280,14 +285,10 @@ static size_t ui_service_edit_max_digits(ui_edit_target_t target)
 static int ui_service_get_edit_value(ui_edit_target_t target)
 {
     switch (target) {
-    case UI_EDIT_TONE:
-        return audio_service_get_tone_hz();
     case UI_EDIT_VOLUME:
         return audio_service_get_volume();
     case UI_EDIT_KEY_IN_WPM:
         return keyer_service_get_key_in_wpm();
-    case UI_EDIT_KEY_OUT_WPM:
-        return keyer_service_get_key_out_wpm();
     case UI_EDIT_LESSON:
         return cw_trainer_lesson_get_config()->lesson;
     case UI_EDIT_LESSON_DURATION:
@@ -309,17 +310,11 @@ static void ui_service_set_edit_value(ui_edit_target_t target, int value)
     value = ui_service_clamp_int(value, ui_service_edit_min(target), ui_service_edit_max(target));
 
     switch (target) {
-    case UI_EDIT_TONE:
-        audio_service_set_tone_hz((uint16_t)value);
-        break;
     case UI_EDIT_VOLUME:
         audio_service_set_volume((uint8_t)value);
         break;
     case UI_EDIT_KEY_IN_WPM:
         keyer_service_set_key_in_wpm((uint8_t)value);
-        break;
-    case UI_EDIT_KEY_OUT_WPM:
-        keyer_service_set_key_out_wpm((uint8_t)value);
         break;
     case UI_EDIT_LESSON:
     case UI_EDIT_LESSON_DURATION:
@@ -347,94 +342,13 @@ static void ui_service_set_edit_buf_value(int value)
     snprintf(s_ui.edit_buf, sizeof(s_ui.edit_buf), "%d", value);
 }
 
-static void ui_service_clear_edit(void)
+static void ui_service_begin_numeric_edit(uint8_t item, ui_edit_target_t target)
 {
-    s_ui.edit_target = UI_EDIT_NONE;
-    s_ui.edit_page = 0U;
-    s_ui.edit_item = 0U;
-    s_ui.edit_buf[0] = '\0';
-    s_ui.edit_user_digits = false;
-}
-
-static bool ui_service_global_item_edit_target(uint8_t page,
-                                               uint8_t item,
-                                               ui_edit_target_t *out_target)
-{
-    ui_edit_target_t target = UI_EDIT_NONE;
-
-    if (page == 0U) {
-        if (item == 2U) {
-            target = UI_EDIT_TONE;
-        } else if (item == 3U) {
-            target = UI_EDIT_VOLUME;
-        } else if (item == 5U) {
-            target = UI_EDIT_KEY_IN_WPM;
-        }
-    } else if (page == 1U && item == 2U) {
-        target = UI_EDIT_KEY_OUT_WPM;
-    }
-
-    if (out_target != NULL) {
-        *out_target = target;
-    }
-
-    return target != UI_EDIT_NONE;
-}
-
-static bool ui_service_local_item_edit_target(uint8_t page,
-                                              uint8_t item,
-                                              ui_edit_target_t *out_target)
-{
-    ui_edit_target_t target = UI_EDIT_NONE;
-
-    if (s_ui.mode == UI_SERVICE_MODE_LESSONS && page == 0U) {
-        if (item == 1U) {
-            target = UI_EDIT_LESSON;
-        } else if (item == 2U) {
-            target = UI_EDIT_LESSON_DURATION;
-        } else if (item == 3U) {
-            target = UI_EDIT_LESSON_CODE_WPM;
-        } else if (item == 4U) {
-            target = UI_EDIT_LESSON_EFFECTIVE_WPM;
-        } else if (item == 5U) {
-            target = UI_EDIT_LESSON_GROUP_LEN;
-        }
-    }
-
-    if (out_target != NULL) {
-        *out_target = target;
-    }
-
-    return target != UI_EDIT_NONE;
-}
-
-static bool ui_service_is_editing_item(uint8_t page, uint8_t item)
-{
-    return s_ui.edit_target != UI_EDIT_NONE && s_ui.edit_page == page && s_ui.edit_item == item;
-}
-
-static void ui_service_begin_numeric_edit(uint8_t item)
-{
-    ui_edit_target_t target;
-    uint8_t page = s_ui.view == UI_VIEW_GLOBAL_MENU ? s_ui.global_page : s_ui.local_page;
-    bool ok = false;
-
-    if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
-        ok = ui_service_global_item_edit_target(s_ui.global_page, item, &target);
-    } else if (s_ui.view == UI_VIEW_LOCAL_MENU) {
-        ok = ui_service_local_item_edit_target(s_ui.local_page, item, &target);
-    }
-
-    if (!ok) {
-        return;
-    }
-
     s_ui.edit_target = target;
-    s_ui.edit_page = page;
     s_ui.edit_item = item;
     s_ui.edit_user_digits = false;
     ui_service_set_edit_buf_value(ui_service_get_edit_value(target));
-    ESP_LOGI(TAG, "menu edit started: page=%u item=%u", s_ui.edit_page, s_ui.edit_item);
+    ESP_LOGI(TAG, "mode menu edit started: item=%u", s_ui.edit_item);
 }
 
 static int ui_service_edit_buffer_value(void)
@@ -450,6 +364,22 @@ static int ui_service_edit_buffer_value(void)
     return atoi(s_ui.edit_buf);
 }
 
+static ui_edit_target_t ui_service_commit_numeric_edit(void)
+{
+    ui_edit_target_t target = s_ui.edit_target;
+    int value;
+
+    if (target == UI_EDIT_NONE) {
+        return UI_EDIT_NONE;
+    }
+
+    value = ui_service_edit_buffer_value();
+    ui_service_set_edit_value(target, value);
+    ESP_LOGI(TAG, "mode menu edit committed: value=%d", ui_service_get_edit_value(target));
+    ui_service_clear_edit();
+    return target;
+}
+
 static void ui_service_step_numeric_edit(int delta)
 {
     int step;
@@ -461,18 +391,12 @@ static void ui_service_step_numeric_edit(int delta)
     step = ui_service_edit_step(s_ui.edit_target);
 
     switch (s_ui.edit_target) {
-    case UI_EDIT_TONE:
-        audio_service_adjust_tone_hz(delta * step);
-        break;
     case UI_EDIT_VOLUME:
         audio_service_adjust_volume(delta * step);
         audio_service_play_feedback_beep();
         break;
     case UI_EDIT_KEY_IN_WPM:
         keyer_service_adjust_key_in_wpm(delta * step);
-        break;
-    case UI_EDIT_KEY_OUT_WPM:
-        keyer_service_adjust_key_out_wpm(delta * step);
         break;
     case UI_EDIT_LESSON:
     case UI_EDIT_LESSON_DURATION:
@@ -528,22 +452,6 @@ static void ui_service_backspace_edit_digit(void)
     }
 }
 
-static ui_edit_target_t ui_service_commit_numeric_edit(void)
-{
-    ui_edit_target_t target = s_ui.edit_target;
-    int value;
-
-    if (target == UI_EDIT_NONE) {
-        return UI_EDIT_NONE;
-    }
-
-    value = ui_service_edit_buffer_value();
-    ui_service_set_edit_value(target, value);
-    ESP_LOGI(TAG, "global menu edit committed: value=%d", ui_service_get_edit_value(target));
-    ui_service_clear_edit();
-    return target;
-}
-
 static void ui_service_set_event(ui_input_event_t *out_event,
                                  ui_input_event_type_t type,
                                  char key)
@@ -556,102 +464,14 @@ static void ui_service_set_event(ui_input_event_t *out_event,
     out_event->key = key;
 }
 
-static bool ui_service_handle_edit_char(char key, ui_input_event_t *out_event)
+static void ui_service_format_value_line(char *dest,
+                                         size_t dest_size,
+                                         uint8_t item,
+                                         const char *prefix,
+                                         int value,
+                                         const char *suffix)
 {
-    ui_edit_target_t target = s_ui.edit_target;
-
-    if (s_ui.edit_target == UI_EDIT_NONE) {
-        return false;
-    }
-
-    if (key == '\n' || key == '\r') {
-        target = ui_service_commit_numeric_edit();
-        if (target == UI_EDIT_VOLUME) {
-            audio_service_play_feedback_beep();
-        }
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
-
-        return true;
-    }
-
-    if (key == '`' || key == '\x1B') {
-        ESP_LOGI(TAG, "global menu edit canceled");
-        ui_service_clear_edit();
-        return true;
-    }
-
-    if (key == '\b' || key == 0x7f) {
-        ui_service_backspace_edit_digit();
-        return true;
-    }
-
-    if (key == ',') {
-        ui_service_step_numeric_edit(-1);
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
-        return true;
-    }
-
-    if (key == '/') {
-        ui_service_step_numeric_edit(1);
-        if (ui_service_edit_target_is_lesson(target)) {
-            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
-        }
-        return true;
-    }
-
-    if (key >= '0' && key <= '9') {
-        ui_service_append_edit_digit(key);
-        return true;
-    }
-
-    if (key == ';' || key == '.') {
-        return true;
-    }
-
-    return false;
-}
-
-static void ui_service_prepare_screen(mini_cw_screen_t *screen)
-{
-    if (screen == NULL) {
-        return;
-    }
-
-    memset(screen, 0, sizeof(*screen));
-    ui_service_set_text(screen->mode, sizeof(screen->mode), ui_service_mode_name(s_ui.mode));
-    ui_service_set_uint_text(screen->tone,
-                             sizeof(screen->tone),
-                             audio_service_get_tone_hz(),
-                             UI_TONE_MAX_HZ);
-    ui_service_set_uint_text(screen->vol,
-                             sizeof(screen->vol),
-                             audio_service_get_volume(),
-                             UI_VOLUME_MAX);
-    ui_service_set_text(screen->key_in,
-                        sizeof(screen->key_in),
-                        keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
-    ui_service_set_text(screen->key_out,
-                        sizeof(screen->key_out),
-                        keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
-    ui_service_set_uint_text(screen->key_wpm,
-                             sizeof(screen->key_wpm),
-                             keyer_service_get_key_in_wpm(),
-                             UI_WPM_MAX);
-}
-
-static void ui_service_format_global_value_line(char *dest,
-                                                size_t dest_size,
-                                                uint8_t page,
-                                                uint8_t item,
-                                                const char *prefix,
-                                                int value,
-                                                const char *suffix)
-{
-    if (ui_service_is_editing_item(page, item)) {
+    if (ui_service_is_editing_item(item)) {
         if (s_ui.edit_buf[0] == '\0') {
             snprintf(dest, dest_size, "%s_%s", prefix, suffix ? suffix : "");
         } else {
@@ -660,17 +480,6 @@ static void ui_service_format_global_value_line(char *dest,
     } else {
         snprintf(dest, dest_size, "%s%d%s", prefix, value, suffix ? suffix : "");
     }
-}
-
-static int ui_service_read_battery_percent(void)
-{
-    int percent = 0;
-
-    if (platform_hal_get_battery_percent(&percent) != ESP_OK) {
-        return 0;
-    }
-
-    return ui_service_clamp_int(percent, 0, 100);
 }
 
 static void ui_service_copy_tail(char *dest, size_t dest_size, const char *text, size_t text_len)
@@ -715,7 +524,8 @@ static void ui_service_render_lesson_normal(mini_cw_screen_t *screen)
         snprintf(screen->line[1], sizeof(screen->line[1]), "Typed:%u", view->copy_len);
         snprintf(screen->line[2], sizeof(screen->line[2]), "%s", copy_tail);
         ui_service_set_text(screen->line[3], sizeof(screen->line[3]), "Enter=check");
-        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "` stop  Fn set");
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "` stop");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
         break;
     case CW_LESSON_STATE_RESULT:
     {
@@ -736,7 +546,7 @@ static void ui_service_render_lesson_normal(mini_cw_screen_t *screen)
                  view->result.best_accuracy,
                  attempts);
         ui_service_set_text(screen->line[3], sizeof(screen->line[3]), "Enter=new run");
-        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Fn settings");
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Ctrl settings");
         break;
     }
     case CW_LESSON_STATE_IDLE:
@@ -752,37 +562,47 @@ static void ui_service_render_lesson_normal(mini_cw_screen_t *screen)
                  view->config.effective_wpm,
                  view->config.duration_min);
         snprintf(screen->line[1], sizeof(screen->line[1]), "Chars:%s", active_preview);
-        snprintf(screen->line[2], sizeof(screen->line[2]), "New:%c Enter=start", view->new_char);
+        snprintf(screen->line[2], sizeof(screen->line[2]), "New:%c", view->new_char);
         snprintf(screen->line[3],
                  sizeof(screen->line[3]),
                  "Last:%u Best:%u",
                  view->result.last_accuracy,
                  view->result.best_accuracy);
-        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Fn settings");
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=start");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
         break;
     }
 }
 
 static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
+    unsigned wpm;
+    char wpm_text[3];
+
     if (screen == NULL) {
         return;
     }
 
-    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "Keyer ready");
-    snprintf(screen->line[1],
-             sizeof(screen->line[1]),
-             "In:%s",
-             keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
-    snprintf(screen->line[2],
-             sizeof(screen->line[2]),
-             "Out:%s",
-             keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
-    snprintf(screen->line[3],
-             sizeof(screen->line[3]),
-             "WPM %u/%u",
-             keyer_service_get_key_in_wpm(),
-             keyer_service_get_key_out_wpm());
+    memset(screen->line[5], ' ', UI_COLS);
+    screen->line[5][UI_COLS] = '\0';
+
+    ui_service_copy_fixed_field(screen->line[5],
+                                sizeof(screen->line[5]),
+                                0U,
+                                8U,
+                                keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
+    ui_service_copy_fixed_field(screen->line[5],
+                                sizeof(screen->line[5]),
+                                9U,
+                                8U,
+                                keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
+
+    wpm = keyer_service_get_key_in_wpm();
+    if (wpm > 99U) {
+        wpm = 99U;
+    }
+    snprintf(wpm_text, sizeof(wpm_text), "%2u", wpm);
+    ui_service_copy_fixed_field(screen->line[5], sizeof(screen->line[5]), 18U, 2U, wpm_text);
 }
 
 static void ui_service_render_practice_normal(mini_cw_screen_t *screen)
@@ -792,7 +612,17 @@ static void ui_service_render_practice_normal(mini_cw_screen_t *screen)
     }
 
     ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "Practice ready");
-    ui_service_set_text(screen->line[1], sizeof(screen->line[1]), cw_trainer_get_status());
+    ui_service_set_text(screen->line[5], sizeof(screen->line[5]), cw_trainer_get_status());
+}
+
+static void ui_service_render_system_normal(mini_cw_screen_t *screen)
+{
+    if (screen == NULL) {
+        return;
+    }
+
+    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "System ready");
+    ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
 }
 
 static void ui_service_render_normal(void)
@@ -807,6 +637,9 @@ static void ui_service_render_normal(void)
     case UI_SERVICE_MODE_PRACTICE:
         ui_service_render_practice_normal(&screen);
         break;
+    case UI_SERVICE_MODE_SYSTEM:
+        ui_service_render_system_normal(&screen);
+        break;
     case UI_SERVICE_MODE_KEYER:
     default:
         ui_service_render_keyer_normal(&screen);
@@ -815,133 +648,70 @@ static void ui_service_render_normal(void)
     ui_screen_render(&screen);
 }
 
-static void ui_service_render_global_menu(void)
+static void ui_service_render_mode_select(void)
 {
     mini_cw_screen_t screen;
 
     ui_service_prepare_screen(&screen);
-
-    if (s_ui.global_page == 0U) {
-        snprintf(screen.line[0],
-                 sizeof(screen.line[0]),
-                 "1 Mode:%s",
-                 ui_service_mode_name(s_ui.mode));
-        ui_service_format_global_value_line(screen.line[1],
-                                            sizeof(screen.line[1]),
-                                            0U,
-                                            2U,
-                                            "2 Tone:",
-                                            audio_service_get_tone_hz(),
-                                            "");
-        ui_service_format_global_value_line(screen.line[2],
-                                            sizeof(screen.line[2]),
-                                            0U,
-                                            3U,
-                                            "3 Volume:",
-                                            audio_service_get_volume(),
-                                            "");
-        snprintf(screen.line[3],
-                 sizeof(screen.line[3]),
-                 "4 KeyIn:%s",
-                 keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
-        ui_service_format_global_value_line(screen.line[4],
-                                            sizeof(screen.line[4]),
-                                            0U,
-                                            5U,
-                                            "5 KeyIn WPM:",
-                                            keyer_service_get_key_in_wpm(),
-                                            "");
-    } else {
-        snprintf(screen.line[0],
-                 sizeof(screen.line[0]),
-                 "1 KeyOut:%s",
-                 keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
-        ui_service_format_global_value_line(screen.line[1],
-                                            sizeof(screen.line[1]),
-                                            1U,
-                                            2U,
-                                            "2 KeyOut WPM:",
-                                            keyer_service_get_key_out_wpm(),
-                                            "");
-        snprintf(screen.line[2],
-                 sizeof(screen.line[2]),
-                 "3 Sleep/Batt %d%%",
-                 ui_service_read_battery_percent());
-        ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4 Date");
-        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Time");
-    }
-
-    ui_screen_render(&screen);
-}
-
-static void ui_service_render_local_no_settings(void)
-{
-    mini_cw_screen_t screen;
-
-    ui_service_prepare_screen(&screen);
-    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "No local settings");
-
-    ui_screen_render(&screen);
-}
-
-static void ui_service_render_local_stub(void)
-{
-    mini_cw_screen_t screen;
-
-    ui_service_prepare_screen(&screen);
-    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "1 Local:stub");
-    ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Mode only");
-    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3");
+    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), "1 Practice");
+    ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Keyer");
+    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3 Lessons");
     ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
     ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 System");
 
     ui_screen_render(&screen);
 }
 
-static void ui_service_render_lesson_settings(void)
+static void ui_service_render_no_settings(const char *label)
+{
+    mini_cw_screen_t screen;
+
+    ui_service_prepare_screen(&screen);
+    ui_service_set_text(screen.line[0], sizeof(screen.line[0]), label);
+
+    ui_screen_render(&screen);
+}
+
+static void ui_service_render_lesson_menu(void)
 {
     mini_cw_screen_t screen;
     const cw_lesson_config_t *config = cw_trainer_lesson_get_config();
 
     ui_service_prepare_screen(&screen);
 
-    ui_service_format_global_value_line(screen.line[0],
-                                        sizeof(screen.line[0]),
-                                        0U,
-                                        1U,
-                                        "1 Lesson:",
-                                        config->lesson,
-                                        "");
-    ui_service_format_global_value_line(screen.line[1],
-                                        sizeof(screen.line[1]),
-                                        0U,
-                                        2U,
-                                        "2 Duration:",
-                                        config->duration_min,
-                                        "m");
-    ui_service_format_global_value_line(screen.line[2],
-                                        sizeof(screen.line[2]),
-                                        0U,
-                                        3U,
-                                        "3 Code WPM:",
-                                        config->code_wpm,
-                                        "");
-    ui_service_format_global_value_line(screen.line[3],
-                                        sizeof(screen.line[3]),
-                                        0U,
-                                        4U,
-                                        "4 Eff WPM:",
-                                        config->effective_wpm,
-                                        "");
+    ui_service_format_value_line(screen.line[0],
+                                 sizeof(screen.line[0]),
+                                 1U,
+                                 "1 Lesson:",
+                                 config->lesson,
+                                 "");
+    ui_service_format_value_line(screen.line[1],
+                                 sizeof(screen.line[1]),
+                                 2U,
+                                 "2 Duration:",
+                                 config->duration_min,
+                                 "m");
+    ui_service_format_value_line(screen.line[2],
+                                 sizeof(screen.line[2]),
+                                 3U,
+                                 "3 Code WPM:",
+                                 config->code_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[3],
+                                 sizeof(screen.line[3]),
+                                 4U,
+                                 "4 Eff WPM:",
+                                 config->effective_wpm,
+                                 "");
 
-    if (ui_service_is_editing_item(0U, 5U)) {
-        ui_service_format_global_value_line(screen.line[4],
-                                            sizeof(screen.line[4]),
-                                            0U,
-                                            5U,
-                                            "5 Group:",
-                                            config->group_len,
-                                            "");
+    if (ui_service_is_editing_item(5U)) {
+        ui_service_format_value_line(screen.line[4],
+                                     sizeof(screen.line[4]),
+                                     5U,
+                                     "5 Group:",
+                                     config->group_len,
+                                     "");
     } else if (config->group_len == 0U) {
         ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Group:Rand");
     } else {
@@ -951,20 +721,53 @@ static void ui_service_render_lesson_settings(void)
     ui_screen_render(&screen);
 }
 
-static void ui_service_render_local_menu(void)
+static void ui_service_render_system_menu(void)
+{
+    mini_cw_screen_t screen;
+
+    ui_service_prepare_screen(&screen);
+
+    ui_service_format_value_line(screen.line[0],
+                                 sizeof(screen.line[0]),
+                                 1U,
+                                 "1 Volume:",
+                                 audio_service_get_volume(),
+                                 "");
+    snprintf(screen.line[1],
+             sizeof(screen.line[1]),
+             "2 KeyIn:%s",
+             keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
+    ui_service_format_value_line(screen.line[2],
+                                 sizeof(screen.line[2]),
+                                 3U,
+                                 "3 KeyIn WPM:",
+                                 keyer_service_get_key_in_wpm(),
+                                 "");
+    snprintf(screen.line[3],
+             sizeof(screen.line[3]),
+             "4 Sleep/Batt %d%%",
+             ui_service_read_battery_percent());
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Date");
+    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 Time");
+
+    ui_screen_render(&screen);
+}
+
+static void ui_service_render_mode_menu(void)
 {
     switch (s_ui.mode) {
+    case UI_SERVICE_MODE_LESSONS:
+        ui_service_render_lesson_menu();
+        break;
+    case UI_SERVICE_MODE_SYSTEM:
+        ui_service_render_system_menu();
+        break;
     case UI_SERVICE_MODE_PRACTICE:
-        ui_service_render_local_no_settings();
+        ui_service_render_no_settings("No settings");
         break;
     case UI_SERVICE_MODE_KEYER:
-        ui_service_render_local_stub();
-        break;
-    case UI_SERVICE_MODE_LESSONS:
-        ui_service_render_lesson_settings();
-        break;
     default:
-        ui_service_render_local_stub();
+        ui_service_render_no_settings("No settings");
         break;
     }
 }
@@ -972,11 +775,11 @@ static void ui_service_render_local_menu(void)
 static void ui_service_render_current_view(void)
 {
     switch (s_ui.view) {
-    case UI_VIEW_GLOBAL_MENU:
-        ui_service_render_global_menu();
+    case UI_VIEW_MODE_SELECT:
+        ui_service_render_mode_select();
         break;
-    case UI_VIEW_LOCAL_MENU:
-        ui_service_render_local_menu();
+    case UI_VIEW_MODE_MENU:
+        ui_service_render_mode_menu();
         break;
     case UI_VIEW_NORMAL:
     default:
@@ -985,40 +788,227 @@ static void ui_service_render_current_view(void)
     }
 }
 
-static void ui_service_change_menu_page(int delta)
+static void ui_service_set_mode_internal(ui_service_mode_t mode)
 {
-    uint8_t *page = NULL;
-    uint8_t page_count = 1U;
-
-    if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
-        page = &s_ui.global_page;
-        page_count = UI_GLOBAL_PAGE_COUNT;
-    } else if (s_ui.view == UI_VIEW_LOCAL_MENU) {
-        page = &s_ui.local_page;
-        page_count = UI_LOCAL_PAGE_COUNT;
+    if (!ui_service_mode_is_valid(mode)) {
+        mode = UI_SERVICE_MODE_KEYER;
     }
 
-    if (page == NULL) {
-        return;
+    s_ui.mode = mode;
+    s_ui.menu_page = 0U;
+    ui_service_clear_edit();
+    ESP_LOGI(TAG, "mode changed: %s", ui_service_mode_name(s_ui.mode));
+}
+
+static void ui_service_enter_mode_select(void)
+{
+    s_ui.view = UI_VIEW_MODE_SELECT;
+    ui_service_clear_edit();
+    ESP_LOGI(TAG, "mode selection entered");
+    ui_service_render_current_view();
+}
+
+static void ui_service_exit_mode_select(void)
+{
+    if (s_ui.view == UI_VIEW_MODE_SELECT) {
+        s_ui.view = UI_VIEW_NORMAL;
     }
 
-    if (delta < 0 && *page > 0U) {
-        --(*page);
-    } else if (delta > 0 && (uint8_t)(*page + 1U) < page_count) {
-        ++(*page);
+    ui_service_clear_edit();
+    ESP_LOGI(TAG, "mode selection exited");
+    ui_service_render_current_view();
+}
+
+static void ui_service_toggle_mode_select(void)
+{
+    if (s_ui.view == UI_VIEW_MODE_SELECT) {
+        ui_service_exit_mode_select();
+    } else {
+        ui_service_enter_mode_select();
     }
 }
 
-static void ui_service_cycle_mode(void)
+static void ui_service_enter_mode_menu(void)
 {
-    int next = (int)s_ui.mode + 1;
+    s_ui.view = UI_VIEW_MODE_MENU;
+    s_ui.menu_page = 0U;
+    ui_service_clear_edit();
+    ESP_LOGI(TAG, "mode menu entered: %s", ui_service_mode_name(s_ui.mode));
+    ui_service_render_current_view();
+}
 
-    if (next > (int)UI_SERVICE_MODE_LESSONS) {
-        next = (int)UI_SERVICE_MODE_PRACTICE;
+static void ui_service_exit_mode_menu(void)
+{
+    if (s_ui.view == UI_VIEW_MODE_MENU) {
+        s_ui.view = UI_VIEW_NORMAL;
     }
 
-    s_ui.mode = (ui_service_mode_t)next;
-    ESP_LOGI(TAG, "mode changed: %s", ui_service_mode_name(s_ui.mode));
+    ui_service_clear_edit();
+    ESP_LOGI(TAG, "mode menu exited");
+    ui_service_render_current_view();
+}
+
+static void ui_service_toggle_mode_menu(void)
+{
+    if (s_ui.view == UI_VIEW_MODE_SELECT) {
+        return;
+    }
+
+    if (s_ui.view == UI_VIEW_MODE_MENU) {
+        ui_service_exit_mode_menu();
+    } else {
+        ui_service_enter_mode_menu();
+    }
+}
+
+static bool ui_service_handle_mode_select_char(char key, ui_input_event_t *out_event)
+{
+    ui_service_mode_t mode;
+    bool valid = true;
+
+    switch (key) {
+    case '1':
+        mode = UI_SERVICE_MODE_PRACTICE;
+        break;
+    case '2':
+        mode = UI_SERVICE_MODE_KEYER;
+        break;
+    case '3':
+        mode = UI_SERVICE_MODE_LESSONS;
+        break;
+    case '6':
+        mode = UI_SERVICE_MODE_SYSTEM;
+        break;
+    default:
+        valid = false;
+        break;
+    }
+
+    if (!valid) {
+        return key >= '1' && key <= '6';
+    }
+
+    ui_service_set_mode_internal(mode);
+    s_ui.view = UI_VIEW_NORMAL;
+    ui_service_set_event(out_event, UI_INPUT_EVENT_MODE_CHANGED, key);
+    return true;
+}
+
+static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out_target)
+{
+    ui_edit_target_t target = UI_EDIT_NONE;
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {
+        if (item == 1U) {
+            target = UI_EDIT_VOLUME;
+        } else if (item == 3U) {
+            target = UI_EDIT_KEY_IN_WPM;
+        }
+    } else if (s_ui.mode == UI_SERVICE_MODE_LESSONS) {
+        if (item == 1U) {
+            target = UI_EDIT_LESSON;
+        } else if (item == 2U) {
+            target = UI_EDIT_LESSON_DURATION;
+        } else if (item == 3U) {
+            target = UI_EDIT_LESSON_CODE_WPM;
+        } else if (item == 4U) {
+            target = UI_EDIT_LESSON_EFFECTIVE_WPM;
+        } else if (item == 5U) {
+            target = UI_EDIT_LESSON_GROUP_LEN;
+        }
+    }
+
+    if (out_target != NULL) {
+        *out_target = target;
+    }
+
+    return target != UI_EDIT_NONE;
+}
+
+static bool ui_service_handle_edit_char(char key, ui_input_event_t *out_event)
+{
+    ui_edit_target_t target = s_ui.edit_target;
+
+    if (s_ui.edit_target == UI_EDIT_NONE) {
+        return false;
+    }
+
+    if (key == '\n' || key == '\r') {
+        target = ui_service_commit_numeric_edit();
+        if (target == UI_EDIT_VOLUME) {
+            audio_service_play_feedback_beep();
+        }
+        if (ui_service_edit_target_is_lesson(target)) {
+            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
+        }
+
+        return true;
+    }
+
+    if (key == '`' || key == '\x1B') {
+        ESP_LOGI(TAG, "mode menu edit canceled");
+        ui_service_clear_edit();
+        return true;
+    }
+
+    if (key == '\b' || key == 0x7f) {
+        ui_service_backspace_edit_digit();
+        return true;
+    }
+
+    if (key == ',') {
+        ui_service_step_numeric_edit(-1);
+        if (ui_service_edit_target_is_lesson(target)) {
+            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
+        }
+        return true;
+    }
+
+    if (key == '/') {
+        ui_service_step_numeric_edit(1);
+        if (ui_service_edit_target_is_lesson(target)) {
+            ui_service_set_event(out_event, UI_INPUT_EVENT_LESSON_CONFIG_CHANGED, key);
+        }
+        return true;
+    }
+
+    if (key >= '0' && key <= '9') {
+        ui_service_append_edit_digit(key);
+        return true;
+    }
+
+    if (key == ';' || key == '.') {
+        return true;
+    }
+
+    return false;
+}
+
+static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event_t *out_event)
+{
+    ui_edit_target_t target;
+
+    if (ui_service_menu_item_edit_target(item, &target)) {
+        ui_service_begin_numeric_edit(item, target);
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 2U) {
+        keyer_service_cycle_key_in_mode(1);
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 4U) {
+        ui_service_set_event(out_event, UI_INPUT_EVENT_SLEEP_REQUEST, key);
+        ESP_LOGI(TAG, "sleep requested from system menu");
+        return true;
+    }
+
+    ESP_LOGI(TAG,
+             "mode menu item %u selected in %s",
+             (unsigned)item,
+             ui_service_mode_name(s_ui.mode));
+    return true;
 }
 
 static bool ui_service_handle_menu_char(char key, ui_input_event_t *out_event)
@@ -1031,74 +1021,22 @@ static bool ui_service_handle_menu_char(char key, ui_input_event_t *out_event)
         return true;
     }
 
-    if (key >= '1' && key <= '5') {
-        uint8_t item = (uint8_t)(key - '0');
-
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU && s_ui.global_page == 0U && item == 1U) {
-            ui_service_cycle_mode();
-            ui_service_set_event(out_event, UI_INPUT_EVENT_MODE_CHANGED, key);
-            return true;
-        }
-
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU &&
-            ui_service_global_item_edit_target(s_ui.global_page, item, NULL)) {
-            ui_service_begin_numeric_edit(item);
-            return true;
-        }
-
-        if (s_ui.view == UI_VIEW_LOCAL_MENU &&
-            ui_service_local_item_edit_target(s_ui.local_page, item, NULL)) {
-            ui_service_begin_numeric_edit(item);
-            return true;
-        }
-
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU && s_ui.global_page == 0U && item == 4U) {
-            keyer_service_cycle_key_in_mode(1);
-            return true;
-        }
-
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU && s_ui.global_page == 1U && item == 1U) {
-            keyer_service_cycle_key_out_mode(1);
-            return true;
-        }
-
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU && s_ui.global_page == 1U && item == 3U) {
-            if (out_event != NULL) {
-                out_event->type = UI_INPUT_EVENT_SLEEP_REQUEST;
-                out_event->key = key;
-            }
-
-            ESP_LOGI(TAG, "sleep requested from global menu");
-            return true;
-        }
-
-        ESP_LOGI(TAG,
-                 "menu item %c selected on view=%u page=%u",
-                 key,
-                 (unsigned)s_ui.view,
-                 (unsigned)(s_ui.view == UI_VIEW_GLOBAL_MENU ? s_ui.global_page
-                                                              : s_ui.local_page));
-        return true;
+    if (key >= '1' && key <= '6') {
+        return ui_service_handle_menu_number((uint8_t)(key - '0'), key, out_event);
     }
 
-    // Menu navigation uses ; . , /. U/D/L/R are reserved for future shortcuts.
     if (key == ';') {
-        ui_service_change_menu_page(-1);
+        if (s_ui.menu_page > 0U) {
+            --s_ui.menu_page;
+        }
         return true;
     }
 
     if (key == '.') {
-        ui_service_change_menu_page(1);
         return true;
     }
 
-    if (key == ',') {
-        ESP_LOGI(TAG, "menu left/change-value stub");
-        return true;
-    }
-
-    if (key == '/') {
-        ESP_LOGI(TAG, "menu right/change-value stub");
+    if (key == ',' || key == '/') {
         return true;
     }
 
@@ -1120,16 +1058,21 @@ static ui_input_event_t ui_service_map_normal_char(char ch)
         event.type = UI_INPUT_EVENT_CANCEL;
     } else if (s_ui.mode == UI_SERVICE_MODE_LESSONS && ch >= 32 && ch <= 126) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
-    } else if ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-        (ch >= '0' && ch <= '9')) {
+    } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
+               ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
+                (ch >= '0' && ch <= '9'))) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
-    } else if (ch == '+' || ch == '=') {
+    } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
+               (ch == '+' || ch == '=')) {
         event.type = UI_INPUT_EVENT_WPM_UP;
-    } else if (ch == '-') {
+    } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
+               ch == '-') {
         event.type = UI_INPUT_EVENT_WPM_DOWN;
-    } else if (ch == ']') {
+    } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
+               ch == ']') {
         event.type = UI_INPUT_EVENT_PITCH_UP;
-    } else if (ch == '[') {
+    } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
+               ch == '[') {
         event.type = UI_INPUT_EVENT_PITCH_DOWN;
     }
 
@@ -1164,52 +1107,8 @@ ui_service_mode_t ui_service_get_mode(void)
 
 void ui_service_set_mode(ui_service_mode_t mode)
 {
-    if ((int)mode < (int)UI_SERVICE_MODE_PRACTICE ||
-        (int)mode > (int)UI_SERVICE_MODE_LESSONS) {
-        mode = UI_SERVICE_MODE_KEYER;
-    }
-
-    s_ui.mode = mode;
-    ui_service_render_current_view();
-}
-
-void ui_service_enter_global_menu(void)
-{
-    s_ui.view = UI_VIEW_GLOBAL_MENU;
-    s_ui.global_page = 0U;
-    ui_service_clear_edit();
-    ESP_LOGI(TAG, "global menu entered");
-    ui_service_render_current_view();
-}
-
-void ui_service_exit_global_menu(void)
-{
-    if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
-        s_ui.view = UI_VIEW_NORMAL;
-    }
-
-    ui_service_clear_edit();
-    ESP_LOGI(TAG, "global menu exited");
-    ui_service_render_current_view();
-}
-
-void ui_service_enter_local_menu(void)
-{
-    s_ui.view = UI_VIEW_LOCAL_MENU;
-    s_ui.local_page = 0U;
-    ui_service_clear_edit();
-    ESP_LOGI(TAG, "local menu entered");
-    ui_service_render_current_view();
-}
-
-void ui_service_exit_local_menu(void)
-{
-    if (s_ui.view == UI_VIEW_LOCAL_MENU) {
-        s_ui.view = UI_VIEW_NORMAL;
-    }
-
-    ui_service_clear_edit();
-    ESP_LOGI(TAG, "local menu exited");
+    ui_service_set_mode_internal(mode);
+    s_ui.view = UI_VIEW_NORMAL;
     ui_service_render_current_view();
 }
 
@@ -1226,27 +1125,17 @@ ui_input_event_t ui_service_poll_input(void)
         return UI_EVENT_NONE;
     }
 
-    if (port_event.type == UI_CARDPUTER_PORT_EVENT_CTRL) {
-        if (s_ui.view == UI_VIEW_GLOBAL_MENU) {
-            ui_service_exit_global_menu();
-        } else if (s_ui.view == UI_VIEW_NORMAL) {
-            ui_service_enter_global_menu();
-        } else {
-            ESP_LOGI(TAG, "ctrl ignored in local menu");
-        }
+    if (port_event.type == UI_CARDPUTER_PORT_EVENT_OPT) {
+        ui_service_toggle_mode_select();
+        return UI_EVENT_NONE;
+    }
 
+    if (port_event.type == UI_CARDPUTER_PORT_EVENT_CTRL) {
+        ui_service_toggle_mode_menu();
         return UI_EVENT_NONE;
     }
 
     if (port_event.type == UI_CARDPUTER_PORT_EVENT_FN) {
-        if (s_ui.view == UI_VIEW_LOCAL_MENU) {
-            ui_service_exit_local_menu();
-        } else if (s_ui.view == UI_VIEW_NORMAL) {
-            ui_service_enter_local_menu();
-        } else {
-            ESP_LOGI(TAG, "fn ignored in global menu");
-        }
-
         return UI_EVENT_NONE;
     }
 
@@ -1254,7 +1143,21 @@ ui_input_event_t ui_service_poll_input(void)
         return UI_EVENT_NONE;
     }
 
-    if (s_ui.view == UI_VIEW_GLOBAL_MENU || s_ui.view == UI_VIEW_LOCAL_MENU) {
+    if (s_ui.view == UI_VIEW_MODE_SELECT) {
+        ui_input_event_t mode_event = UI_EVENT_NONE;
+
+        if (ui_service_handle_mode_select_char(port_event.ch, &mode_event)) {
+            ui_service_render_current_view();
+        }
+
+        if (mode_event.type != UI_INPUT_EVENT_NONE) {
+            return mode_event;
+        }
+
+        return UI_EVENT_NONE;
+    }
+
+    if (s_ui.view == UI_VIEW_MODE_MENU) {
         ui_input_event_t menu_event = UI_EVENT_NONE;
 
         if (ui_service_handle_menu_char(port_event.ch, &menu_event)) {

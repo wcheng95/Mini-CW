@@ -20,7 +20,7 @@
 
 static const char *TAG = "keyer_service";
 
-#define KEYER_DEFAULT_TX_WPM 16U
+#define KEYER_DEFAULT_TX_WPM 20U
 #define KEYER_MIN_TX_WPM 5U
 #define KEYER_MAX_TX_WPM 60U
 #define KEYER_IO_MODE_COUNT 4

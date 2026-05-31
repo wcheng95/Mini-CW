@@ -39,6 +39,7 @@ typedef enum {
     UI_SERVICE_MODE_PRACTICE = 0,
     UI_SERVICE_MODE_KEYER,
     UI_SERVICE_MODE_LESSONS,
+    UI_SERVICE_MODE_SYSTEM,
 } ui_service_mode_t;
 
 void ui_service_init(void);
@@ -46,10 +47,6 @@ void ui_service_show_demo_screen(void);
 void ui_service_refresh(void);
 ui_service_mode_t ui_service_get_mode(void);
 void ui_service_set_mode(ui_service_mode_t mode);
-void ui_service_enter_global_menu(void);
-void ui_service_exit_global_menu(void);
-void ui_service_enter_local_menu(void);
-void ui_service_exit_local_menu(void);
 void ui_service_prepare_for_sleep(void);
 ui_input_event_t ui_service_poll_input(void);
 

@@ -32,30 +32,17 @@ extern "C" {
 #define UI_LINE3_Y 59
 #define UI_LINE4_Y 78
 #define UI_LINE5_Y 97
+#define UI_LINE6_Y 116
 
-#define UI_BOTTOM_Y 116
-#define UI_BOTTOM_H 19
-
-#define UI_MODE_LINES 5
+#define UI_MODE_LINES 6
 
 #define UI_TOP_MODE_W 13
-#define UI_TOP_TONE_W 3
-#define UI_TOP_VOL_W 2
-
-#define UI_BOTTOM_KEYIN_W 8
-#define UI_BOTTOM_KEYOUT_W 8
-#define UI_BOTTOM_WPM_W 2
 
 typedef struct {
     char mode[UI_TOP_MODE_W + 1];
-    char tone[UI_TOP_TONE_W + 1];
-    char vol[UI_TOP_VOL_W + 1];
+    char top_right[UI_COLS + 1];
 
     char line[UI_MODE_LINES][UI_COLS + 1];
-
-    char key_in[UI_BOTTOM_KEYIN_W + 1];
-    char key_out[UI_BOTTOM_KEYOUT_W + 1];
-    char key_wpm[UI_BOTTOM_WPM_W + 1];
 } mini_cw_screen_t;
 
 void ui_screen_init(void);

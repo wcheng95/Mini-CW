@@ -49,6 +49,8 @@ static app_mode_t app_core_ui_mode_to_app(ui_service_mode_t mode)
         return APP_MODE_PRACTICE;
     case UI_SERVICE_MODE_LESSONS:
         return APP_MODE_LESSONS;
+    case UI_SERVICE_MODE_SYSTEM:
+        return APP_MODE_SYSTEM;
     case UI_SERVICE_MODE_KEYER:
     default:
         return APP_MODE_KEYER;
@@ -80,7 +82,7 @@ static void app_core_handle_char_input(char key)
 {
     if (s_app.mode == APP_MODE_LESSONS) {
         cw_trainer_lesson_append_char(key);
-    } else {
+    } else if (s_app.mode == APP_MODE_KEYER || s_app.mode == APP_MODE_PRACTICE) {
         cw_trainer_handle_char_input(key);
     }
 
@@ -226,6 +228,8 @@ const char *app_core_mode_to_string(app_mode_t mode)
         return "Keyer";
     case APP_MODE_LESSONS:
         return "Lessons";
+    case APP_MODE_SYSTEM:
+        return "System";
     default:
         return "Unknown";
     }

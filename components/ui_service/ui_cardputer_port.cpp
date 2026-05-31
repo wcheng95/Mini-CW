@@ -20,6 +20,7 @@ static bool s_initialized = false;
 static char s_last_reported_key = '\0';
 static bool s_last_reported_fn = false;
 static bool s_last_reported_ctrl = false;
+static bool s_last_reported_opt = false;
 
 static uint16_t ui_cardputer_port_map_color(ui_cardputer_port_color_t color)
 {
@@ -85,6 +86,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
     if (ch != '\0') {
         s_last_reported_fn = false;
         s_last_reported_ctrl = false;
+        s_last_reported_opt = false;
 
         if (ch == s_last_reported_key) {
             return false;
@@ -99,8 +101,25 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     s_last_reported_key = '\0';
 
+    if (keys.opt) {
+        s_last_reported_fn = false;
+        s_last_reported_ctrl = false;
+
+        if (s_last_reported_opt) {
+            return false;
+        }
+
+        s_last_reported_opt = true;
+        out_event->type = UI_CARDPUTER_PORT_EVENT_OPT;
+        ESP_LOGI(TAG, "keyboard opt");
+        return true;
+    }
+
+    s_last_reported_opt = false;
+
     if (keys.fn) {
         s_last_reported_ctrl = false;
+        s_last_reported_opt = false;
 
         if (s_last_reported_fn) {
             return false;
@@ -115,6 +134,8 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
     s_last_reported_fn = false;
 
     if (keys.ctrl) {
+        s_last_reported_opt = false;
+
         if (s_last_reported_ctrl) {
             return false;
         }

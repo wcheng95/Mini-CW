@@ -21,6 +21,7 @@ typedef enum {
     UI_CARDPUTER_PORT_EVENT_CHAR,
     UI_CARDPUTER_PORT_EVENT_FN,
     UI_CARDPUTER_PORT_EVENT_CTRL,
+    UI_CARDPUTER_PORT_EVENT_OPT,
 } ui_cardputer_port_event_type_t;
 
 typedef struct {

@@ -48,30 +48,28 @@ static void ui_screen_copy_field(char *dest, std::size_t width, const char *src)
 
 static void ui_screen_format_top_row(char row[UI_COLS + 1], const mini_cw_screen_t *screen)
 {
+    std::size_t top_right_len = 0;
+    std::size_t start;
+
     std::memset(row, ' ', UI_COLS);
     row[UI_COLS] = '\0';
 
     ui_screen_copy_field(&row[0], UI_TOP_MODE_W, screen->mode);
-    row[UI_TOP_MODE_W] = ' ';
-    ui_screen_copy_field(&row[UI_TOP_MODE_W + 1], UI_TOP_TONE_W, screen->tone);
-    row[UI_TOP_MODE_W + 1 + UI_TOP_TONE_W] = ' ';
-    ui_screen_copy_field(&row[UI_TOP_MODE_W + 1 + UI_TOP_TONE_W + 1],
-                         UI_TOP_VOL_W,
-                         screen->vol);
-}
 
-static void ui_screen_format_bottom_row(char row[UI_COLS + 1], const mini_cw_screen_t *screen)
-{
-    std::memset(row, ' ', UI_COLS);
-    row[UI_COLS] = '\0';
+    top_right_len = std::strlen(screen->top_right);
 
-    ui_screen_copy_field(&row[0], UI_BOTTOM_KEYIN_W, screen->key_in);
-    row[UI_BOTTOM_KEYIN_W] = ' ';
-    ui_screen_copy_field(&row[UI_BOTTOM_KEYIN_W + 1], UI_BOTTOM_KEYOUT_W, screen->key_out);
-    row[UI_BOTTOM_KEYIN_W + 1 + UI_BOTTOM_KEYOUT_W] = ' ';
-    ui_screen_copy_field(&row[UI_BOTTOM_KEYIN_W + 1 + UI_BOTTOM_KEYOUT_W + 1],
-                         UI_BOTTOM_WPM_W,
-                         screen->key_wpm);
+    if (top_right_len > UI_COLS - UI_TOP_MODE_W - 1) {
+        top_right_len = UI_COLS - UI_TOP_MODE_W - 1;
+    }
+
+    if (top_right_len == 0) {
+        return;
+    }
+
+    start = UI_COLS - top_right_len;
+    for (std::size_t i = 0; i < top_right_len; ++i) {
+        row[start + i] = screen->top_right[i];
+    }
 }
 
 static void ui_screen_draw_text_row(int y,
@@ -118,10 +116,8 @@ void ui_screen_render(const mini_cw_screen_t *screen)
     }
 
     char top[UI_COLS + 1];
-    char bottom[UI_COLS + 1];
 
     ui_screen_format_top_row(top, screen);
-    ui_screen_format_bottom_row(bottom, screen);
 
     ui_cardputer_port_display_begin_frame();
     ui_cardputer_port_display_fill_screen(UI_CARDPUTER_PORT_COLOR_BLACK);
@@ -163,10 +159,10 @@ void ui_screen_render(const mini_cw_screen_t *screen)
                             UI_CARDPUTER_PORT_COLOR_WHITE,
                             UI_CARDPUTER_PORT_COLOR_BLACK);
 
-    ui_screen_draw_text_row(UI_BOTTOM_Y,
-                            UI_BOTTOM_H,
-                            bottom,
-                            UI_CARDPUTER_PORT_COLOR_CYAN,
+    ui_screen_draw_text_row(UI_LINE6_Y,
+                            UI_ROW_H,
+                            screen->line[5],
+                            UI_CARDPUTER_PORT_COLOR_WHITE,
                             UI_CARDPUTER_PORT_COLOR_BLACK);
 
     ui_cardputer_port_display_end_frame();
