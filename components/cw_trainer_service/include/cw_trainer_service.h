@@ -126,6 +126,54 @@ const cw_word_view_t *cw_trainer_word_get_view(void);
 void cw_trainer_word_load_persisted(const cw_word_config_t *config,
                                     const cw_word_result_t *result);
 
+typedef struct {
+    uint8_t start_wpm;
+    uint8_t min_char_wpm;
+    uint8_t max_wpm;
+} cw_callsign_config_t;
+
+typedef struct {
+    uint32_t score;
+    uint8_t max_wpm;
+    uint8_t correct_count;
+    uint8_t total_calls;
+    uint32_t attempts;
+    uint32_t best_score;
+    uint8_t best_max_wpm;
+} cw_callsign_result_t;
+
+typedef enum {
+    CW_CALLSIGN_STATE_IDLE = 0,
+    CW_CALLSIGN_STATE_READY,
+    CW_CALLSIGN_STATE_COPYING,
+    CW_CALLSIGN_STATE_RESULT,
+} cw_callsign_state_t;
+
+typedef struct {
+    cw_callsign_state_t state;
+    cw_callsign_config_t config;
+    cw_callsign_result_t result;
+    uint8_t current_index;
+    uint8_t current_wpm;
+    const char *copy_text;
+    uint8_t copy_len;
+    const char *last_sent_call;
+    const char *last_answer;
+    bool last_correct;
+} cw_callsign_view_t;
+
+const cw_callsign_config_t *cw_trainer_callsign_get_config(void);
+void cw_trainer_callsign_set_config(const cw_callsign_config_t *config);
+void cw_trainer_callsign_start(void);
+void cw_trainer_callsign_abort(void);
+bool cw_trainer_callsign_append_char(char ch);
+void cw_trainer_callsign_backspace(void);
+const cw_callsign_result_t *cw_trainer_callsign_submit(void);
+void cw_trainer_callsign_replay(void);
+const cw_callsign_view_t *cw_trainer_callsign_get_view(void);
+void cw_trainer_callsign_load_persisted(const cw_callsign_config_t *config,
+                                        const cw_callsign_result_t *result);
+
 const char *cw_trainer_get_target_text(void);
 const char *cw_trainer_get_copy_text(void);
 char cw_trainer_get_last_char(void);

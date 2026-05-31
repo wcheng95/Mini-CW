@@ -26,6 +26,9 @@ bool storage_lesson_save_result(const cw_lesson_result_t *result);
 bool storage_word_load(cw_word_config_t *config, cw_word_result_t *result);
 bool storage_word_save_config(const cw_word_config_t *config);
 bool storage_word_save_result(const cw_word_result_t *result);
+bool storage_callsign_load(cw_callsign_config_t *config, cw_callsign_result_t *result);
+bool storage_callsign_save_config(const cw_callsign_config_t *config);
+bool storage_callsign_save_result(const cw_callsign_result_t *result);
 
 #ifdef __cplusplus
 }

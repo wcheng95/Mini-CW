@@ -79,3 +79,25 @@ bool storage_word_save_result(const cw_word_result_t *result)
     ESP_LOGI(TAG, "word result save skipped: persistence disabled");
     return false;
 }
+
+bool storage_callsign_load(cw_callsign_config_t *config, cw_callsign_result_t *result)
+{
+    (void)config;
+    (void)result;
+    ESP_LOGI(TAG, "callsign load skipped: persistence disabled");
+    return false;
+}
+
+bool storage_callsign_save_config(const cw_callsign_config_t *config)
+{
+    (void)config;
+    ESP_LOGI(TAG, "callsign config save skipped: persistence disabled");
+    return false;
+}
+
+bool storage_callsign_save_result(const cw_callsign_result_t *result)
+{
+    (void)result;
+    ESP_LOGI(TAG, "callsign result save skipped: persistence disabled");
+    return false;
+}

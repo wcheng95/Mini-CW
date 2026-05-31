@@ -49,6 +49,9 @@ typedef enum {
     UI_EDIT_WORD_MIN_CHAR_WPM,
     UI_EDIT_WORD_LESSON,
     UI_EDIT_WORD_MAX_LEN,
+    UI_EDIT_CALLSIGN_SPEED,
+    UI_EDIT_CALLSIGN_MIN_CHAR_WPM,
+    UI_EDIT_CALLSIGN_MAX_WPM,
 } ui_edit_target_t;
 
 typedef struct {
@@ -109,6 +112,8 @@ static const char *ui_service_mode_name(ui_service_mode_t mode)
         return "Lessons";
     case UI_SERVICE_MODE_WORDS:
         return "Words";
+    case UI_SERVICE_MODE_CALLSIGNS:
+        return "Calls";
     case UI_SERVICE_MODE_SYSTEM:
         return "System";
     default:
@@ -212,6 +217,10 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return 9;
     case UI_EDIT_WORD_MAX_LEN:
         return 2;
+    case UI_EDIT_CALLSIGN_SPEED:
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+    case UI_EDIT_CALLSIGN_MAX_WPM:
+        return UI_WPM_MIN;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -241,6 +250,10 @@ static int ui_service_edit_max(ui_edit_target_t target)
         return 40;
     case UI_EDIT_WORD_MAX_LEN:
         return 15;
+    case UI_EDIT_CALLSIGN_SPEED:
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+    case UI_EDIT_CALLSIGN_MAX_WPM:
+        return 40;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -263,6 +276,9 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_WORD_MIN_CHAR_WPM:
     case UI_EDIT_WORD_LESSON:
     case UI_EDIT_WORD_MAX_LEN:
+    case UI_EDIT_CALLSIGN_SPEED:
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+    case UI_EDIT_CALLSIGN_MAX_WPM:
         return 1;
     case UI_EDIT_NONE:
     default:
@@ -304,6 +320,12 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return cw_trainer_word_get_config()->lesson;
     case UI_EDIT_WORD_MAX_LEN:
         return cw_trainer_word_get_config()->max_word_len;
+    case UI_EDIT_CALLSIGN_SPEED:
+        return cw_trainer_callsign_get_config()->start_wpm;
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+        return cw_trainer_callsign_get_config()->min_char_wpm;
+    case UI_EDIT_CALLSIGN_MAX_WPM:
+        return cw_trainer_callsign_get_config()->max_wpm;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -328,6 +350,10 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     case UI_EDIT_WORD_LESSON:
     case UI_EDIT_WORD_MAX_LEN:
         return UI_INPUT_EVENT_WORD_CONFIG_CHANGED;
+    case UI_EDIT_CALLSIGN_SPEED:
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+    case UI_EDIT_CALLSIGN_MAX_WPM:
+        return UI_INPUT_EVENT_CALLSIGN_CONFIG_CHANGED;
     case UI_EDIT_NONE:
     default:
         return UI_INPUT_EVENT_NONE;
@@ -359,6 +385,12 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
         return UI_SETTING_WORD_LESSON;
     case UI_EDIT_WORD_MAX_LEN:
         return UI_SETTING_WORD_MAX_LEN;
+    case UI_EDIT_CALLSIGN_SPEED:
+        return UI_SETTING_CALLSIGN_SPEED;
+    case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
+        return UI_SETTING_CALLSIGN_MIN_CHAR_WPM;
+    case UI_EDIT_CALLSIGN_MAX_WPM:
+        return UI_SETTING_CALLSIGN_MAX_WPM;
     case UI_EDIT_NONE:
     default:
         return UI_SETTING_NONE;
@@ -706,6 +738,97 @@ static void ui_service_render_word_normal(mini_cw_screen_t *screen)
     }
 }
 
+static void ui_service_render_callsign_normal(mini_cw_screen_t *screen)
+{
+    const cw_callsign_view_t *view = cw_trainer_callsign_get_view();
+    char copy_tail[17];
+    char last_tail[13];
+    unsigned attempts;
+
+    if (screen == NULL || view == NULL) {
+        return;
+    }
+
+    switch (view->state) {
+    case CW_CALLSIGN_STATE_COPYING:
+        ui_service_copy_tail(copy_tail, sizeof(copy_tail), view->copy_text, view->copy_len);
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Call %02u/%02u %uw",
+                 (unsigned)(view->current_index + 1U),
+                 (unsigned)view->result.total_calls,
+                 (unsigned)view->current_wpm);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "Score:%lu Max:%u",
+                 (unsigned long)view->result.score,
+                 (unsigned)view->result.max_wpm);
+        snprintf(screen->line[2], sizeof(screen->line[2]), "Typed:%.14s", copy_tail);
+        if (view->last_sent_call != NULL && view->last_sent_call[0] != '\0') {
+            ui_service_copy_tail(last_tail,
+                                 sizeof(last_tail),
+                                 view->last_sent_call,
+                                 strlen(view->last_sent_call));
+            snprintf(screen->line[3],
+                     sizeof(screen->line[3]),
+                     "%s:%s",
+                     view->last_correct ? "OK" : "NO",
+                     last_tail);
+        } else {
+            ui_service_set_text(screen->line[3], sizeof(screen->line[3]), "Last:-");
+        }
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=check ./sp");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "` stop Ctrl menu");
+        break;
+    case CW_CALLSIGN_STATE_RESULT:
+        attempts = view->result.attempts > 9999U ? 9999U : view->result.attempts;
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Done S:%lu",
+                 (unsigned long)view->result.score);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "Max:%u OK:%u/%u",
+                 (unsigned)view->result.max_wpm,
+                 (unsigned)view->result.correct_count,
+                 (unsigned)view->result.total_calls);
+        snprintf(screen->line[2],
+                 sizeof(screen->line[2]),
+                 "Best:%lu M:%u",
+                 (unsigned long)view->result.best_score,
+                 (unsigned)view->result.best_max_wpm);
+        snprintf(screen->line[3], sizeof(screen->line[3]), "Attempts:%u", attempts);
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=new run");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
+        break;
+    case CW_CALLSIGN_STATE_IDLE:
+    case CW_CALLSIGN_STATE_READY:
+    default:
+        snprintf(screen->line[0],
+                 sizeof(screen->line[0]),
+                 "Speed:%u Min:%u",
+                 (unsigned)view->config.start_wpm,
+                 (unsigned)view->config.min_char_wpm);
+        snprintf(screen->line[1],
+                 sizeof(screen->line[1]),
+                 "MaxWPM:%u",
+                 (unsigned)view->config.max_wpm);
+        snprintf(screen->line[2],
+                 sizeof(screen->line[2]),
+                 "Last S:%lu M:%u",
+                 (unsigned long)view->result.score,
+                 (unsigned)view->result.max_wpm);
+        snprintf(screen->line[3],
+                 sizeof(screen->line[3]),
+                 "Best:%lu M:%u",
+                 (unsigned long)view->result.best_score,
+                 (unsigned)view->result.best_max_wpm);
+        ui_service_set_text(screen->line[4], sizeof(screen->line[4]), "Enter=start");
+        ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
+        break;
+    }
+}
+
 static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
     unsigned wpm;
@@ -769,6 +892,9 @@ static void ui_service_render_normal(void)
     case UI_SERVICE_MODE_WORDS:
         ui_service_render_word_normal(&screen);
         break;
+    case UI_SERVICE_MODE_CALLSIGNS:
+        ui_service_render_callsign_normal(&screen);
+        break;
     case UI_SERVICE_MODE_PRACTICE:
         ui_service_render_practice_normal(&screen);
         break;
@@ -792,7 +918,7 @@ static void ui_service_render_mode_select(void)
     ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "2 Keyer");
     ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3 Lessons");
     ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4 Words");
-    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Calls");
     ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 System");
 
     ui_screen_render(&screen);
@@ -893,6 +1019,38 @@ static void ui_service_render_word_menu(void)
     ui_screen_render(&screen);
 }
 
+static void ui_service_render_callsign_menu(void)
+{
+    mini_cw_screen_t screen;
+    const cw_callsign_config_t *config = cw_trainer_callsign_get_config();
+
+    ui_service_prepare_screen(&screen);
+
+    ui_service_format_value_line(screen.line[0],
+                                 sizeof(screen.line[0]),
+                                 1U,
+                                 "1 Speed:",
+                                 config->start_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[1],
+                                 sizeof(screen.line[1]),
+                                 2U,
+                                 "2 MinChar:",
+                                 config->min_char_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[2],
+                                 sizeof(screen.line[2]),
+                                 3U,
+                                 "3 MaxWPM:",
+                                 config->max_wpm,
+                                 "");
+    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
+
+    ui_screen_render(&screen);
+}
+
 static void ui_service_render_system_menu(void)
 {
     mini_cw_screen_t screen;
@@ -933,6 +1091,9 @@ static void ui_service_render_mode_menu(void)
         break;
     case UI_SERVICE_MODE_WORDS:
         ui_service_render_word_menu();
+        break;
+    case UI_SERVICE_MODE_CALLSIGNS:
+        ui_service_render_callsign_menu();
         break;
     case UI_SERVICE_MODE_SYSTEM:
         ui_service_render_system_menu();
@@ -1054,6 +1215,9 @@ static bool ui_service_handle_mode_select_char(char key, ui_input_event_t *out_e
     case '4':
         mode = UI_SERVICE_MODE_WORDS;
         break;
+    case '5':
+        mode = UI_SERVICE_MODE_CALLSIGNS;
+        break;
     case '6':
         mode = UI_SERVICE_MODE_SYSTEM;
         break;
@@ -1103,6 +1267,14 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
             target = UI_EDIT_WORD_LESSON;
         } else if (item == 4U) {
             target = UI_EDIT_WORD_MAX_LEN;
+        }
+    } else if (s_ui.mode == UI_SERVICE_MODE_CALLSIGNS) {
+        if (item == 1U) {
+            target = UI_EDIT_CALLSIGN_SPEED;
+        } else if (item == 2U) {
+            target = UI_EDIT_CALLSIGN_MIN_CHAR_WPM;
+        } else if (item == 3U) {
+            target = UI_EDIT_CALLSIGN_MAX_WPM;
         }
     }
 
@@ -1239,6 +1411,10 @@ static ui_input_event_t ui_service_map_normal_char(char ch)
     } else if (s_ui.mode == UI_SERVICE_MODE_WORDS && ch == '.') {
         event.type = UI_INPUT_EVENT_REPLAY;
     } else if (s_ui.mode == UI_SERVICE_MODE_WORDS && ch >= 32 && ch <= 126) {
+        event.type = UI_INPUT_EVENT_CHAR_INPUT;
+    } else if (s_ui.mode == UI_SERVICE_MODE_CALLSIGNS && (ch == '.' || ch == ' ')) {
+        event.type = UI_INPUT_EVENT_REPLAY;
+    } else if (s_ui.mode == UI_SERVICE_MODE_CALLSIGNS && ch >= 32 && ch <= 126) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
     } else if ((s_ui.mode == UI_SERVICE_MODE_KEYER || s_ui.mode == UI_SERVICE_MODE_PRACTICE) &&
                ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||

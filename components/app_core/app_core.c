@@ -51,6 +51,8 @@ static app_mode_t app_core_ui_mode_to_app(ui_service_mode_t mode)
         return APP_MODE_LESSONS;
     case UI_SERVICE_MODE_WORDS:
         return APP_MODE_WORDS;
+    case UI_SERVICE_MODE_CALLSIGNS:
+        return APP_MODE_CALLSIGNS;
     case UI_SERVICE_MODE_SYSTEM:
         return APP_MODE_SYSTEM;
     case UI_SERVICE_MODE_KEYER:
@@ -93,6 +95,24 @@ static void app_core_handle_word_select(void)
     } else {
         cw_trainer_word_start();
         storage_word_save_config(cw_trainer_word_get_config());
+    }
+
+    ui_service_refresh();
+}
+
+static void app_core_handle_callsign_select(void)
+{
+    const cw_callsign_view_t *view = cw_trainer_callsign_get_view();
+
+    if (view != NULL && view->state == CW_CALLSIGN_STATE_COPYING) {
+        const cw_callsign_result_t *result = cw_trainer_callsign_submit();
+        const cw_callsign_view_t *updated_view = cw_trainer_callsign_get_view();
+        if (updated_view != NULL && updated_view->state == CW_CALLSIGN_STATE_RESULT) {
+            storage_callsign_save_result(result);
+        }
+    } else {
+        cw_trainer_callsign_start();
+        storage_callsign_save_config(cw_trainer_callsign_get_config());
     }
 
     ui_service_refresh();
@@ -160,6 +180,9 @@ static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
         case UI_SETTING_WORD_MIN_CHAR_WPM:
         case UI_SETTING_WORD_LESSON:
         case UI_SETTING_WORD_MAX_LEN:
+        case UI_SETTING_CALLSIGN_SPEED:
+        case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
+        case UI_SETTING_CALLSIGN_MAX_WPM:
         default:
             break;
         }
@@ -198,6 +221,9 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
         case UI_SETTING_LESSON_CODE_WPM:
         case UI_SETTING_LESSON_EFFECTIVE_WPM:
         case UI_SETTING_LESSON_GROUP_LEN:
+        case UI_SETTING_CALLSIGN_SPEED:
+        case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
+        case UI_SETTING_CALLSIGN_MAX_WPM:
         default:
             break;
         }
@@ -209,12 +235,53 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
     ui_service_refresh();
 }
 
+static void app_core_handle_callsign_config_changed(const ui_input_event_t *event)
+{
+    cw_callsign_config_t config = *cw_trainer_callsign_get_config();
+
+    if (event != NULL) {
+        switch (event->setting) {
+        case UI_SETTING_CALLSIGN_SPEED:
+            config.start_wpm = (uint8_t)event->value;
+            break;
+        case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
+            config.min_char_wpm = (uint8_t)event->value;
+            break;
+        case UI_SETTING_CALLSIGN_MAX_WPM:
+            config.max_wpm = (uint8_t)event->value;
+            break;
+        case UI_SETTING_NONE:
+        case UI_SETTING_VOLUME:
+        case UI_SETTING_KEY_IN_WPM:
+        case UI_SETTING_KEY_IN_MODE:
+        case UI_SETTING_LESSON:
+        case UI_SETTING_LESSON_DURATION:
+        case UI_SETTING_LESSON_CODE_WPM:
+        case UI_SETTING_LESSON_EFFECTIVE_WPM:
+        case UI_SETTING_LESSON_GROUP_LEN:
+        case UI_SETTING_WORD_SPEED:
+        case UI_SETTING_WORD_MIN_CHAR_WPM:
+        case UI_SETTING_WORD_LESSON:
+        case UI_SETTING_WORD_MAX_LEN:
+        default:
+            break;
+        }
+    }
+
+    /* UI reports intent; app_core applies trainer state and persistence routing. */
+    cw_trainer_callsign_set_config(&config);
+    storage_callsign_save_config(cw_trainer_callsign_get_config());
+    ui_service_refresh();
+}
+
 static void app_core_handle_char_input(char key)
 {
     if (s_app.mode == APP_MODE_LESSONS) {
         cw_trainer_lesson_append_char(key);
     } else if (s_app.mode == APP_MODE_WORDS) {
         cw_trainer_word_append_char(key);
+    } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+        cw_trainer_callsign_append_char(key);
     } else if (s_app.mode == APP_MODE_KEYER || s_app.mode == APP_MODE_PRACTICE) {
         cw_trainer_handle_char_input(key);
     }
@@ -234,6 +301,8 @@ static void app_core_handle_ui_event(ui_input_event_t event)
             cw_trainer_lesson_abort();
         } else if (s_app.mode == APP_MODE_WORDS) {
             cw_trainer_word_abort();
+        } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+            cw_trainer_callsign_abort();
         } else {
             audio_service_stop_all();
             cw_trainer_stop();
@@ -271,11 +340,16 @@ static void app_core_handle_ui_event(ui_input_event_t event)
     case UI_INPUT_EVENT_WORD_CONFIG_CHANGED:
         app_core_handle_word_config_changed(&event);
         break;
+    case UI_INPUT_EVENT_CALLSIGN_CONFIG_CHANGED:
+        app_core_handle_callsign_config_changed(&event);
+        break;
     case UI_INPUT_EVENT_SELECT:
         if (s_app.mode == APP_MODE_LESSONS) {
             app_core_handle_lesson_select();
         } else if (s_app.mode == APP_MODE_WORDS) {
             app_core_handle_word_select();
+        } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+            app_core_handle_callsign_select();
         }
         break;
     case UI_INPUT_EVENT_CHAR_INPUT:
@@ -288,11 +362,17 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         } else if (s_app.mode == APP_MODE_WORDS) {
             cw_trainer_word_backspace();
             ui_service_refresh();
+        } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+            cw_trainer_callsign_backspace();
+            ui_service_refresh();
         }
         break;
     case UI_INPUT_EVENT_REPLAY:
         if (s_app.mode == APP_MODE_WORDS) {
             cw_trainer_word_replay();
+            ui_service_refresh();
+        } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+            cw_trainer_callsign_replay();
             ui_service_refresh();
         }
         break;
@@ -352,6 +432,11 @@ void app_core_init(void)
     if (storage_word_load(&word_config, &word_result)) {
         cw_trainer_word_load_persisted(&word_config, &word_result);
     }
+    cw_callsign_config_t callsign_config = *cw_trainer_callsign_get_config();
+    cw_callsign_result_t callsign_result = {0};
+    if (storage_callsign_load(&callsign_config, &callsign_result)) {
+        cw_trainer_callsign_load_persisted(&callsign_config, &callsign_result);
+    }
 
     s_app.initialized = true;
     app_core_sync_mode_from_ui();
@@ -392,6 +477,8 @@ const char *app_core_mode_to_string(app_mode_t mode)
         return "Lessons";
     case APP_MODE_WORDS:
         return "Words";
+    case APP_MODE_CALLSIGNS:
+        return "Calls";
     case APP_MODE_SYSTEM:
         return "System";
     default:

@@ -18,6 +18,7 @@ typedef enum {
     APP_MODE_KEYER,
     APP_MODE_LESSONS,
     APP_MODE_WORDS,
+    APP_MODE_CALLSIGNS,
     APP_MODE_SYSTEM,
 } app_mode_t;
 
