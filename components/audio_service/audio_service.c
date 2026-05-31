@@ -2,8 +2,9 @@
  * audio_service
  *
  * Responsibility: Owns all speaker and CW tone output.
- * Hardware ownership: speaker/tone output. Milestone 2 converts characters to
- * Morse timing and writes PCM through the private audio output port.
+ * Hardware ownership: speaker/tone output. A single audio task streams PCM to
+ * the codec continuously (zeros = silence) and never mutes between elements;
+ * callers drive it through a segment FIFO.
  */
 
 #include "audio_service.h"
@@ -33,39 +34,28 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_MAX_PITCH_HZ 999
 #define AUDIO_CW_MAX_SAMPLE_RATE_HZ 48000U
 #define AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ 48000U
-#define AUDIO_CW_TONE_CHUNK_MS 10
+/*
+ * Render granularity. The stream loop re-checks the segment ring / flush flag
+ * and refills text once per chunk, so the chunk period bounds preemption and
+ * keying latency; 5 ms matches the 5 ms app/keyer poll.
+ */
+#define AUDIO_CW_TONE_CHUNK_MS 5
 #define AUDIO_CW_ENVELOPE_MS 5
-#define AUDIO_CW_STOP_SILENCE_MS 80
-/*
- * Keyer tones (paddle elements and the straight-key release) must keep feeding
- * the codec until the I2S DMA has fully clocked out before muting, otherwise
- * the mute silences the ~30 ms still queued in the DMA (board_audio uses
- * dma_desc_num=6 * dma_frame_num=240 = 1440 frames = 30 ms at 48 kHz). That
- * truncates the raised-cosine release (clicks) and, at 30 WPM where a dit is
- * only 40 ms, swallows most of the element (noise). Drain with a margin over
- * the DMA depth. NOTE: validation value for the mute/drain-race hypothesis;
- * the real fix is continuous playback with an idle mute, which removes this
- * per-element silence entirely.
- */
-#define AUDIO_CW_KEYER_DRAIN_MS 40
-/*
- * Idle "gate": the codec output is muted only after this long with no audio,
- * never between elements. Muting/unmuting the ES8311 output stage pops, so
- * toggling it per dit/dah clicks on every key edge; holding it enabled across
- * a sending burst removes that click. Keep this longer than the gaps that
- * occur mid-sending (inter-word spacing, brief pauses) so it does not re-mute
- * in the middle of a QSO -- the only remaining edge is the first element after
- * a real idle, which costs one unmute pop in exchange for not draining the
- * battery while the rig sits unused.
- */
-#define AUDIO_CW_IDLE_MUTE_MS 5000
 #define AUDIO_CW_AMPLITUDE 12000
 #define AUDIO_CW_TASK_STACK_BYTES 6144
-#define AUDIO_CW_COMMAND_TEXT_MAX 1024
-#define AUDIO_CW_COMMAND_PATTERN_MAX 16
+#define AUDIO_CW_TEXT_MAX 1024
 #define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 40
 #define AUDIO_SERVICE_MAX_VOLUME_PERCENT 99
 #define AUDIO_SERVICE_FEEDBACK_TONE_MS 50
+/*
+ * Segment FIFO. Producers push a few segments at a time; text is expanded one
+ * character at a time on the audio task so a long lesson never needs the whole
+ * message pre-expanded. The longest Morse symbol is 6 elements -> 6 tones + 5
+ * element gaps + 1 inter-character gap = 12 segments, so the loop only expands
+ * a character when at least that many ring slots are free.
+ */
+#define AUDIO_SEG_RING_CAP 64
+#define AUDIO_SEG_MAX_PER_CHAR 12
 /*
  * Sine sidetone DDS, ported from the Mini-FT8 qdx dds_q15 NCO: a 64-bit
  * free-running phase accumulator drives a 257-entry quarter-wave Q15 sine
@@ -84,23 +74,23 @@ typedef struct {
     const char *pattern;
 } morse_entry_t;
 
+/*
+ * One unit of work for the stream loop. A keyed element (SEG_TONE) carries its
+ * own raised-cosine attack/release flags; gaps are SEG_SILENCE; the straight
+ * key holds at full gain (SEG_TONE_HOLD) until a release is requested.
+ */
 typedef enum {
-    AUDIO_CW_COMMAND_NONE = 0,
-    AUDIO_CW_COMMAND_TEXT,
-    AUDIO_CW_COMMAND_CHAR,
-    AUDIO_CW_COMMAND_PATTERN,
-    AUDIO_CW_COMMAND_FEEDBACK_TONE,
-    AUDIO_CW_COMMAND_TONE_MS,
-    AUDIO_CW_COMMAND_CONTINUOUS_TONE,
-} audio_cw_command_type_t;
+    SEG_SILENCE = 0,
+    SEG_TONE,
+    SEG_TONE_HOLD,
+} seg_kind_t;
 
 typedef struct {
-    audio_cw_command_type_t type;
-    char text[AUDIO_CW_COMMAND_TEXT_MAX];
-    char ch;
-    char pattern[AUDIO_CW_COMMAND_PATTERN_MAX];
-    uint16_t duration_ms;
-} audio_cw_command_t;
+    seg_kind_t kind;
+    uint32_t duration_samples;
+    bool attack;
+    bool release;
+} audio_seg_t;
 
 static const char *audio_cw_get_pattern(char ch);
 
@@ -153,17 +143,40 @@ static uint8_t s_wpm = 16;
 static uint8_t s_farnsworth_wpm = 12;
 static uint8_t s_volume_percent = AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT;
 static bool s_output_ready;
-static volatile bool s_busy;
-static volatile bool s_stop_requested;
-static volatile bool s_hard_stop_requested;
-static volatile bool s_command_pending;
-static volatile bool s_sidetone_latched;
 static TaskHandle_t s_audio_task;
-static SemaphoreHandle_t s_command_mutex;
-static audio_cw_command_t s_pending_command;
+static SemaphoreHandle_t s_seg_mutex;
 static int16_t s_sin_quarter[DDS_QTABLE_SIZE + 1];
 static uint64_t s_phase;
-static volatile bool s_codec_active;
+
+/* Segment ring (guarded by s_seg_mutex). */
+static audio_seg_t s_seg_ring[AUDIO_SEG_RING_CAP];
+static uint16_t s_seg_head;
+static uint16_t s_seg_tail;
+static uint16_t s_seg_count;
+
+/* Incremental text source (guarded by s_seg_mutex). */
+static char s_text_src[AUDIO_CW_TEXT_MAX + 1U];
+static uint16_t s_text_pos;
+static volatile bool s_text_active;
+
+/* Stream control flags (guarded by s_seg_mutex unless noted). */
+static volatile bool s_flush_requested;   /* ramp current tone down, then drop */
+static volatile bool s_hold_active;       /* a straight-key hold is in flight */
+
+/* Render-loop-private cursor (touched only by the audio task). */
+static audio_seg_t s_cur;
+static bool s_cur_valid;
+static uint32_t s_cur_pos;
+static uint32_t s_cur_attack_n;
+static uint32_t s_cur_release_n;
+static bool s_rel_mode;        /* current segment is a flush/release tail */
+static uint16_t s_rel_g0;      /* gain the release tail starts from */
+static uint32_t s_cur_gen;     /* busy generation the cursor's tone belongs to */
+
+/* is_busy() source of truth: keyed samples enqueued but not yet emitted. */
+static portMUX_TYPE s_busy_mux = portMUX_INITIALIZER_UNLOCKED;
+static volatile uint32_t s_keyed_outstanding;
+static volatile uint32_t s_busy_gen;
 
 static audio_output_port_config_t s_output_config = {
     .sample_rate_hz = AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ,
@@ -293,121 +306,6 @@ static int16_t audio_cw_render_sample(uint64_t phase, uint16_t env_q15)
     return (int16_t)s;
 }
 
-static uint32_t dit_ms(void)
-{
-    return 1200U / s_wpm;
-}
-
-static uint32_t farnsworth_dit_ms(void)
-{
-    uint8_t effective_wpm = s_farnsworth_wpm;
-
-    if (effective_wpm == 0U || effective_wpm > s_wpm) {
-        effective_wpm = s_wpm;
-    }
-
-    effective_wpm = clamp_wpm(effective_wpm);
-    return 1200U / effective_wpm;
-}
-
-static TickType_t audio_cw_ms_to_delay_ticks(uint32_t ms)
-{
-    TickType_t ticks = pdMS_TO_TICKS(ms);
-    return ticks > 0 ? ticks : 1;
-}
-
-static bool audio_cw_lock(TickType_t timeout)
-{
-    if (s_command_mutex == NULL) {
-        return true;
-    }
-
-    return xSemaphoreTake(s_command_mutex, timeout) == pdTRUE;
-}
-
-static void audio_cw_unlock(void)
-{
-    if (s_command_mutex != NULL) {
-        xSemaphoreGive(s_command_mutex);
-    }
-}
-
-static bool audio_cw_sample_rate_supported(int sample_rate_hz)
-{
-    /*
-     * The CW tone generator currently supports output rates up to 48 kHz. Its
-     * local stack PCM buffers are sized from AUDIO_CW_MAX_SAMPLE_RATE_HZ, so a
-     * higher runtime rate is rejected before chunk generation.
-     */
-    return sample_rate_hz > 0 &&
-           sample_rate_hz <= (int)AUDIO_CW_MAX_SAMPLE_RATE_HZ;
-}
-
-static void audio_service_set_output_muted(bool muted)
-{
-    if (!s_output_ready) {
-        return;
-    }
-
-    audio_output_port_set_muted(muted);
-}
-
-/*
- * Single owner of the codec mute state. Transition-guarded so the audio task
- * can call it before every element without re-toggling the output stage: the
- * codec is unmuted on the first element of a burst and stays enabled until the
- * idle gate (or a hard stop) releases it. All mute/unmute outside init goes
- * through here so s_codec_active always reflects the hardware.
- */
-static void audio_cw_set_codec_active(bool active)
-{
-    if (s_codec_active == active) {
-        return;
-    }
-
-    s_codec_active = active;
-    audio_service_set_output_muted(!active);
-}
-
-static void audio_cw_write_silence_ms(uint32_t duration_ms, bool interruptible)
-{
-    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
-        return;
-    }
-
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
-    const uint32_t max_chunk_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
-    uint32_t samples_written = 0;
-
-    memset(samples, 0, sizeof(samples));
-
-    if (max_chunk_samples == 0) {
-        vTaskDelay(audio_cw_ms_to_delay_ticks(duration_ms));
-        return;
-    }
-
-    while (samples_written < total_samples) {
-        if (interruptible && s_stop_requested) {
-            break;
-        }
-
-        uint32_t remaining = total_samples - samples_written;
-        uint32_t chunk_samples = remaining < max_chunk_samples ? remaining : max_chunk_samples;
-
-        size_t bytes_written = 0;
-        bool wrote = s_output_ready &&
-                     audio_output_port_write_pcm(samples, chunk_samples, &bytes_written);
-        if (!wrote) {
-            vTaskDelay(audio_cw_ms_to_delay_ticks((chunk_samples * 1000U) / sample_rate));
-        }
-
-        samples_written += chunk_samples;
-    }
-}
-
 static void audio_cw_calculate_envelope_samples(uint32_t total_samples,
                                                 uint32_t sample_rate,
                                                 uint32_t *attack_samples,
@@ -465,417 +363,423 @@ static uint16_t audio_cw_envelope_gain_q15(uint32_t sample_index,
     return gain;
 }
 
-static void audio_cw_gap_ms(uint32_t delay_ms)
+static uint32_t dit_ms(void)
 {
-    if (delay_ms > 0) {
-        audio_cw_write_silence_ms(delay_ms, true);
+    return 1200U / s_wpm;
+}
+
+static uint32_t farnsworth_dit_ms(void)
+{
+    uint8_t effective_wpm = s_farnsworth_wpm;
+
+    if (effective_wpm == 0U || effective_wpm > s_wpm) {
+        effective_wpm = s_wpm;
+    }
+
+    effective_wpm = clamp_wpm(effective_wpm);
+    return 1200U / effective_wpm;
+}
+
+static uint32_t audio_cw_ms_to_samples(uint32_t ms)
+{
+    return (uint32_t)(((uint64_t)s_output_config.sample_rate_hz * ms) / 1000U);
+}
+
+static TickType_t audio_cw_ms_to_delay_ticks(uint32_t ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    return ticks > 0 ? ticks : 1;
+}
+
+static bool audio_cw_lock(TickType_t timeout)
+{
+    if (s_seg_mutex == NULL) {
+        return true;
+    }
+
+    return xSemaphoreTake(s_seg_mutex, timeout) == pdTRUE;
+}
+
+static void audio_cw_unlock(void)
+{
+    if (s_seg_mutex != NULL) {
+        xSemaphoreGive(s_seg_mutex);
     }
 }
 
-static void audio_cw_write_tone_ms(uint32_t duration_ms)
+static bool audio_cw_sample_rate_supported(int sample_rate_hz)
 {
-    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
-        return;
-    }
-
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t total_samples = (uint32_t)(((uint64_t)sample_rate * duration_ms) / 1000U);
-    const uint32_t max_chunk_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
-    uint32_t samples_written = 0;
-    uint32_t attack_samples = 0;
-    uint32_t release_samples = 0;
-
-    if (total_samples == 0 || max_chunk_samples == 0) {
-        return;
-    }
-
-    const uint64_t phase_inc = audio_cw_phase_inc();
-    uint64_t phase = s_phase;
-
-    audio_cw_calculate_envelope_samples(total_samples,
-                                        sample_rate,
-                                        &attack_samples,
-                                        &release_samples);
-
     /*
-     * Pure sine sidetone from the shared quarter-wave DDS table with a
-     * raised-cosine attack/release. The phase accumulator is seeded from the
-     * persistent s_phase and never reset here, so consecutive dits/dahs stay
-     * phase continuous; the envelope still returns to ~zero at both ends, so
-     * element boundaries cannot click regardless of where phase lands.
+     * The CW tone generator currently supports output rates up to 48 kHz. Its
+     * local stack PCM buffer is sized from AUDIO_CW_MAX_SAMPLE_RATE_HZ, so a
+     * higher runtime rate is rejected before chunk generation.
      */
-    while (samples_written < total_samples && !s_stop_requested) {
-        uint32_t remaining = total_samples - samples_written;
-        uint32_t chunk_samples = remaining < max_chunk_samples ? remaining : max_chunk_samples;
-
-        for (uint32_t i = 0; i < chunk_samples; ++i) {
-            uint32_t sample_index = samples_written + i;
-            uint16_t envelope = audio_cw_envelope_gain_q15(sample_index,
-                                                           total_samples,
-                                                           attack_samples,
-                                                           release_samples);
-            samples[i] = audio_cw_render_sample(phase, envelope);
-            phase += phase_inc;
-        }
-
-        size_t bytes_written = 0;
-        bool wrote = s_output_ready &&
-                     audio_output_port_write_pcm(samples, chunk_samples, &bytes_written);
-        if (!wrote) {
-            vTaskDelay(audio_cw_ms_to_delay_ticks((chunk_samples * 1000U) / sample_rate));
-        }
-
-        samples_written += chunk_samples;
-    }
-
-    s_phase = phase;
+    return sample_rate_hz > 0 &&
+           sample_rate_hz <= (int)AUDIO_CW_MAX_SAMPLE_RATE_HZ;
 }
 
-static void audio_cw_write_release_ramp(void)
+static void audio_service_set_output_muted(bool muted)
 {
-    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
+    if (!s_output_ready) {
         return;
     }
 
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t total_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_ENVELOPE_MS) / 1000U);
-    const uint32_t max_chunk_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
-    uint32_t samples_written = 0;
-
-    if (total_samples == 0 || max_chunk_samples == 0) {
-        return;
-    }
-
-    const uint64_t phase_inc = audio_cw_phase_inc();
-    uint64_t phase = s_phase;
-
-    while (samples_written < total_samples && !s_hard_stop_requested) {
-        uint32_t remaining = total_samples - samples_written;
-        uint32_t chunk_samples = remaining < max_chunk_samples ? remaining : max_chunk_samples;
-
-        for (uint32_t i = 0; i < chunk_samples; ++i) {
-            uint32_t sample_index = samples_written + i;
-            uint16_t gain = audio_cw_rcos_rise_q15(total_samples - 1U - sample_index, total_samples);
-
-            samples[i] = audio_cw_render_sample(phase, gain);
-            phase += phase_inc;
-        }
-
-        size_t bytes_written = 0;
-        bool wrote = s_output_ready &&
-                     audio_output_port_write_pcm(samples, chunk_samples, &bytes_written);
-        if (!wrote) {
-            vTaskDelay(audio_cw_ms_to_delay_ticks((chunk_samples * 1000U) / sample_rate));
-        }
-
-        samples_written += chunk_samples;
-    }
-
-    s_phase = phase;
+    audio_output_port_set_muted(muted);
 }
 
-static void audio_cw_write_continuous_tone(void)
+/*
+ * is_busy() accounting: keyed (tone) samples that have been enqueued but not
+ * yet emitted into a written chunk. Producers add synchronously so is_busy()
+ * is true the instant play_dit/dah returns; the render loop subtracts as it
+ * commits keyed samples, so it goes false no earlier than the element is sent.
+ */
+static uint32_t audio_cw_busy_generation(void)
 {
-    if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
-        return;
-    }
-
-    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
-    const uint32_t chunk_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_TONE_CHUNK_MS) / 1000U);
-    uint32_t attack_samples =
-        (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_ENVELOPE_MS) / 1000U);
-    int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
-    uint64_t generated_samples = 0;
-
-    if (chunk_samples == 0) {
-        return;
-    }
-
-    if (attack_samples == 0) {
-        attack_samples = 1;
-    }
-
-    const uint64_t phase_inc = audio_cw_phase_inc();
-    uint64_t phase = s_phase;
-
-    while (!s_stop_requested) {
-        for (uint32_t i = 0; i < chunk_samples; ++i) {
-            uint16_t gain = (generated_samples < attack_samples)
-                                ? audio_cw_rcos_rise_q15((uint32_t)generated_samples, attack_samples)
-                                : 32767;
-
-            samples[i] = audio_cw_render_sample(phase, gain);
-            phase += phase_inc;
-            ++generated_samples;
-        }
-
-        size_t bytes_written = 0;
-        bool wrote = s_output_ready &&
-                     audio_output_port_write_pcm(samples, chunk_samples, &bytes_written);
-        if (!wrote) {
-            vTaskDelay(audio_cw_ms_to_delay_ticks(AUDIO_CW_TONE_CHUNK_MS));
-        }
-    }
-
-    s_phase = phase;
-
-    if (!s_hard_stop_requested) {
-        audio_cw_write_release_ramp();
-    }
+    return s_busy_gen;
 }
 
-static void audio_cw_play_pattern_blocking(const char *pattern)
+static void audio_cw_busy_add(uint32_t samples)
 {
-    if (pattern == NULL || pattern[0] == '\0') {
-        return;
-    }
-
-    uint32_t unit_ms = dit_ms();
-    for (const char *p = pattern; *p != '\0' && !s_stop_requested; ++p) {
-        uint32_t units = 0;
-        if (*p == '.') {
-            units = 1;
-        } else if (*p == '-') {
-            units = 3;
-        } else {
-            ESP_LOGW(TAG, "unsupported Morse element: '%c'", *p);
-            continue;
-        }
-
-        ESP_LOGI(TAG, "tone: %c %u ms", *p, (unsigned)(unit_ms * units));
-        audio_cw_write_tone_ms(unit_ms * units);
-
-        if (p[1] != '\0' && !s_stop_requested) {
-            ESP_LOGI(TAG, "element gap: %u ms", (unsigned)unit_ms);
-            audio_cw_gap_ms(unit_ms);
-        }
-    }
+    portENTER_CRITICAL(&s_busy_mux);
+    s_keyed_outstanding += samples;
+    portEXIT_CRITICAL(&s_busy_mux);
 }
 
-static void audio_cw_play_char_blocking(char ch)
+/*
+ * Subtract emitted keyed samples, but only if no preempt cleared the counter
+ * since this tally's element was loaded into the cursor. A flush bumps the
+ * generation under the same spinlock as the replacement element's busy_add, so
+ * a tally accumulated for a since-preempted element fails the match and is
+ * dropped instead of being charged against the new element's fresh count.
+ */
+static void audio_cw_busy_sub(uint32_t samples, uint32_t gen)
 {
-    char normalized = (char)toupper((unsigned char)ch);
-    const char *pattern = audio_cw_get_pattern(normalized);
-    if (pattern == NULL) {
-        ESP_LOGW(TAG, "unsupported character: '%c'", ch);
-        return;
+    portENTER_CRITICAL(&s_busy_mux);
+    if (s_busy_gen == gen) {
+        s_keyed_outstanding = (s_keyed_outstanding > samples) ? (s_keyed_outstanding - samples) : 0U;
     }
-
-    ESP_LOGI(TAG, "play char: %c %s dit=%u ms pitch=%u Hz",
-             normalized,
-             pattern,
-             (unsigned)dit_ms(),
-             (unsigned)s_pitch_hz);
-    audio_cw_play_pattern_blocking(pattern);
-
-    if (!s_stop_requested) {
-        ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(farnsworth_dit_ms() * 3U));
-        audio_cw_gap_ms(farnsworth_dit_ms() * 3U);
-    }
+    portEXIT_CRITICAL(&s_busy_mux);
 }
 
-static void audio_cw_play_text_blocking(const char *text)
+static void audio_cw_busy_clear(void)
 {
-    if (text == NULL) {
-        return;
-    }
-
-    ESP_LOGI(TAG, "play text: %s", text);
-
-    for (const char *p = text; *p != '\0' && !s_stop_requested; ++p) {
-        if (*p == ' ') {
-            ESP_LOGI(TAG, "word gap: %u ms", (unsigned)(farnsworth_dit_ms() * 7U));
-            audio_cw_gap_ms(farnsworth_dit_ms() * 7U);
-            continue;
-        }
-
-        const char *pattern = audio_cw_get_pattern(*p);
-        if (pattern == NULL) {
-            ESP_LOGW(TAG, "unsupported text character: '%c'", *p);
-            continue;
-        }
-
-        ESP_LOGI(TAG, "text char: %c %s", (char)toupper((unsigned char)*p), pattern);
-        audio_cw_play_pattern_blocking(pattern);
-
-        if (p[1] != '\0' && p[1] != ' ' && !s_stop_requested) {
-            ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(farnsworth_dit_ms() * 3U));
-            audio_cw_gap_ms(farnsworth_dit_ms() * 3U);
-        }
-    }
+    portENTER_CRITICAL(&s_busy_mux);
+    s_keyed_outstanding = 0U;
+    s_busy_gen++;
+    portEXIT_CRITICAL(&s_busy_mux);
 }
 
-static void audio_cw_run_command(const audio_cw_command_t *command)
+/* Ring helpers; caller must hold s_seg_mutex. */
+static bool audio_cw_seg_push(const audio_seg_t *seg)
 {
-    if (command == NULL) {
-        return;
-    }
-
-    switch (command->type) {
-    case AUDIO_CW_COMMAND_TEXT:
-        audio_cw_play_text_blocking(command->text);
-        break;
-    case AUDIO_CW_COMMAND_CHAR:
-        audio_cw_play_char_blocking(command->ch);
-        break;
-    case AUDIO_CW_COMMAND_PATTERN:
-        audio_cw_play_pattern_blocking(command->pattern);
-        break;
-    case AUDIO_CW_COMMAND_FEEDBACK_TONE:
-        audio_cw_write_tone_ms(AUDIO_SERVICE_FEEDBACK_TONE_MS);
-        break;
-    case AUDIO_CW_COMMAND_TONE_MS:
-        audio_cw_write_tone_ms(command->duration_ms);
-        break;
-    case AUDIO_CW_COMMAND_CONTINUOUS_TONE:
-        audio_cw_write_continuous_tone();
-        break;
-    case AUDIO_CW_COMMAND_NONE:
-    default:
-        break;
-    }
-}
-
-static uint32_t audio_cw_command_stop_silence_ms(const audio_cw_command_t *command)
-{
-    if (command == NULL) {
-        return AUDIO_CW_STOP_SILENCE_MS;
-    }
-
-    switch (command->type) {
-    case AUDIO_CW_COMMAND_TONE_MS:
-    case AUDIO_CW_COMMAND_CONTINUOUS_TONE:
-        return AUDIO_CW_KEYER_DRAIN_MS;
-    case AUDIO_CW_COMMAND_TEXT:
-    case AUDIO_CW_COMMAND_CHAR:
-    case AUDIO_CW_COMMAND_PATTERN:
-    case AUDIO_CW_COMMAND_FEEDBACK_TONE:
-    case AUDIO_CW_COMMAND_NONE:
-    default:
-        return AUDIO_CW_STOP_SILENCE_MS;
-    }
-}
-
-static bool audio_cw_take_pending_command(audio_cw_command_t *out_command)
-{
-    bool has_command = false;
-
-    if (out_command == NULL) {
+    if (s_seg_count >= AUDIO_SEG_RING_CAP) {
         return false;
     }
 
-    if (audio_cw_lock(portMAX_DELAY)) {
-        if (s_command_pending) {
-            *out_command = s_pending_command;
-            memset(&s_pending_command, 0, sizeof(s_pending_command));
-            s_command_pending = false;
-            has_command = true;
-        }
-
-        audio_cw_unlock();
-    }
-
-    return has_command;
+    s_seg_ring[s_seg_tail] = *seg;
+    s_seg_tail = (uint16_t)((s_seg_tail + 1U) % AUDIO_SEG_RING_CAP);
+    s_seg_count++;
+    return true;
 }
 
-static void audio_cw_clear_pending_command(void)
+static bool audio_cw_seg_pop(audio_seg_t *out)
 {
-    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
-        memset(&s_pending_command, 0, sizeof(s_pending_command));
-        s_command_pending = false;
+    if (s_seg_count == 0) {
+        return false;
+    }
+
+    *out = s_seg_ring[s_seg_head];
+    s_seg_head = (uint16_t)((s_seg_head + 1U) % AUDIO_SEG_RING_CAP);
+    s_seg_count--;
+    return true;
+}
+
+static void audio_cw_seg_clear(void)
+{
+    s_seg_head = 0;
+    s_seg_tail = 0;
+    s_seg_count = 0;
+}
+
+static uint16_t audio_cw_seg_free(void)
+{
+    return (uint16_t)(AUDIO_SEG_RING_CAP - s_seg_count);
+}
+
+/* Drop everything queued and ask the loop to ramp the live tone down cleanly. */
+static void audio_cw_preempt_locked(void)
+{
+    audio_cw_seg_clear();
+    s_text_active = false;
+    s_hold_active = false;
+    audio_cw_busy_clear();
+    s_flush_requested = true;
+}
+
+/* Push a finite keyed tone of N samples (counts toward is_busy). */
+static void audio_cw_push_tone_locked(uint32_t samples)
+{
+    if (samples == 0) {
+        return;
+    }
+
+    audio_seg_t seg = {
+        .kind = SEG_TONE,
+        .duration_samples = samples,
+        .attack = true,
+        .release = true,
+    };
+
+    if (audio_cw_seg_push(&seg)) {
+        audio_cw_busy_add(samples);
+    } else {
+        ESP_LOGW(TAG, "segment ring full; dropping tone");
+    }
+}
+
+static void audio_cw_push_silence_locked(uint32_t samples)
+{
+    if (samples == 0) {
+        return;
+    }
+
+    audio_seg_t seg = {
+        .kind = SEG_SILENCE,
+        .duration_samples = samples,
+    };
+    audio_cw_seg_push(&seg);
+}
+
+/* Gain the current cursor would emit at s_cur_pos right now. */
+static uint16_t audio_cw_cursor_gain(void)
+{
+    if (s_rel_mode) {
+        uint16_t fall = audio_cw_rcos_rise_q15(s_cur_release_n - 1U - s_cur_pos, s_cur_release_n);
+        return (uint16_t)(((uint32_t)s_rel_g0 * fall) >> 15);
+    }
+
+    if (s_cur.kind == SEG_TONE_HOLD) {
+        return (s_cur_pos < s_cur_attack_n)
+                   ? audio_cw_rcos_rise_q15(s_cur_pos, s_cur_attack_n)
+                   : 32767;
+    }
+
+    return audio_cw_envelope_gain_q15(s_cur_pos,
+                                      s_cur.duration_samples,
+                                      s_cur_attack_n,
+                                      s_cur_release_n);
+}
+
+/* Convert whatever is sounding into a short raised-cosine release tail. */
+static void audio_cw_begin_release_locked(void)
+{
+    if (!s_cur_valid || s_cur.kind == SEG_SILENCE) {
+        s_cur_valid = false;
+        s_rel_mode = false;
+        return;
+    }
+
+    uint16_t g0 = audio_cw_cursor_gain();
+    uint32_t rel = audio_cw_ms_to_samples(AUDIO_CW_ENVELOPE_MS);
+    if (rel == 0) {
+        rel = 1;
+    }
+
+    s_rel_g0 = g0;
+    s_cur.kind = SEG_TONE;
+    s_cur.duration_samples = rel;
+    s_cur.attack = false;
+    s_cur.release = true;
+    s_cur_pos = 0;
+    s_cur_attack_n = 0;
+    s_cur_release_n = rel;
+    s_rel_mode = true;
+    s_cur_valid = true;
+}
+
+/* Pop the next segment into the cursor; returns false if the ring is empty. */
+static bool audio_cw_refill_cursor(void)
+{
+    audio_seg_t seg;
+    bool got = false;
+
+    if (audio_cw_lock(portMAX_DELAY)) {
+        got = audio_cw_seg_pop(&seg);
         audio_cw_unlock();
     }
+
+    if (!got) {
+        return false;
+    }
+
+    s_cur = seg;
+    s_cur_pos = 0;
+    s_rel_mode = false;
+    s_cur_gen = audio_cw_busy_generation();
+
+    if (seg.kind == SEG_TONE) {
+        uint32_t attack_n = 0;
+        uint32_t release_n = 0;
+        audio_cw_calculate_envelope_samples(seg.duration_samples,
+                                            (uint32_t)s_output_config.sample_rate_hz,
+                                            &attack_n,
+                                            &release_n);
+        s_cur_attack_n = seg.attack ? attack_n : 0;
+        s_cur_release_n = seg.release ? release_n : 0;
+    } else if (seg.kind == SEG_TONE_HOLD) {
+        uint32_t env = audio_cw_ms_to_samples(AUDIO_CW_ENVELOPE_MS);
+        s_cur_attack_n = env > 0 ? env : 1;
+        s_cur_release_n = 0;
+    }
+
+    s_cur_valid = true;
+    return true;
+}
+
+/* Expand one source character into segments; caller holds s_seg_mutex. */
+static bool audio_cw_expand_next_char_locked(void)
+{
+    char ch = s_text_src[s_text_pos];
+    if (ch == '\0') {
+        return false;
+    }
+
+    if (ch == ' ') {
+        audio_cw_push_silence_locked(audio_cw_ms_to_samples(farnsworth_dit_ms() * 7U));
+        s_text_pos++;
+        return true;
+    }
+
+    const char *pattern = audio_cw_get_pattern(ch);
+    if (pattern != NULL) {
+        uint32_t unit = audio_cw_ms_to_samples(dit_ms());
+        for (const char *p = pattern; *p != '\0'; ++p) {
+            uint32_t units = (*p == '-') ? 3U : 1U;
+            audio_cw_push_tone_locked(unit * units);
+            if (p[1] != '\0') {
+                audio_cw_push_silence_locked(unit); /* element gap */
+            }
+        }
+
+        char next = s_text_src[s_text_pos + 1];
+        if (next != '\0' && next != ' ') {
+            audio_cw_push_silence_locked(audio_cw_ms_to_samples(farnsworth_dit_ms() * 3U));
+        }
+    } else {
+        ESP_LOGW(TAG, "unsupported text character: '%c'", ch);
+    }
+
+    s_text_pos++;
+    return true;
 }
 
 static void audio_cw_task(void *arg)
 {
     (void)arg;
 
-    for (;;) {
-        /*
-         * While the codec is enabled, wake after the idle timeout so silence
-         * can release it (the gate). While it is already muted there is nothing
-         * to release, so block until the next command. The codec is muted only
-         * on this idle path, never between elements, so key edges cannot click.
-         */
-        uint32_t notified = ulTaskNotifyTake(pdTRUE,
-                                             s_codec_active
-                                                 ? pdMS_TO_TICKS(AUDIO_CW_IDLE_MUTE_MS)
-                                                 : portMAX_DELAY);
+    const uint32_t sample_rate = (uint32_t)s_output_config.sample_rate_hz;
+    const uint32_t chunk = audio_cw_ms_to_samples(AUDIO_CW_TONE_CHUNK_MS);
+    int16_t buf[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
 
-        if (notified == 0) {
-            audio_cw_set_codec_active(false);
-            continue;
+    if (chunk == 0 || !audio_cw_sample_rate_supported((int)sample_rate)) {
+        ESP_LOGE(TAG, "unsupported sample rate %u; audio task idle", (unsigned)sample_rate);
+        vTaskDelete(NULL);
+        return;
+    }
+
+    /*
+     * Prime the DMA with silence while still muted, then unmute so the codec
+     * turns on with zeros already flowing -> no startup pop. From here the
+     * codec stays enabled; the stream feeds zeros when idle.
+     */
+    memset(buf, 0, chunk * sizeof(int16_t));
+    for (int k = 0; k < 8; ++k) {
+        size_t bw = 0;
+        if (!(s_output_ready && audio_output_port_write_pcm(buf, chunk, &bw))) {
+            break;
+        }
+    }
+    audio_service_set_output_muted(false);
+
+    for (;;) {
+        const uint64_t phase_inc = audio_cw_phase_inc();
+
+        if (audio_cw_lock(portMAX_DELAY)) {
+            if (s_flush_requested) {
+                s_flush_requested = false;
+                audio_cw_begin_release_locked();
+            }
+            while (s_text_active && audio_cw_seg_free() >= AUDIO_SEG_MAX_PER_CHAR) {
+                if (!audio_cw_expand_next_char_locked()) {
+                    s_text_active = false;
+                    break;
+                }
+            }
+            audio_cw_unlock();
         }
 
-        for (;;) {
-            audio_cw_command_t command;
-            if (!audio_cw_take_pending_command(&command)) {
+        uint32_t keyed_tally = 0;
+        uint32_t keyed_gen = 0;
+        uint32_t i = 0;
+        while (i < chunk) {
+            if (!s_cur_valid && !audio_cw_refill_cursor()) {
+                /* Ring empty: the rest of this chunk is silence. */
+                while (i < chunk) {
+                    buf[i++] = 0;
+                }
                 break;
             }
 
-            s_stop_requested = false;
-            s_hard_stop_requested = false;
-            s_busy = true;
-            audio_cw_set_codec_active(true);
-            audio_cw_run_command(&command);
-            uint32_t stop_silence_ms = audio_cw_command_stop_silence_ms(&command);
-            if (stop_silence_ms > 0) {
-                audio_cw_write_silence_ms(stop_silence_ms, false);
+            if (s_cur.kind == SEG_SILENCE) {
+                buf[i] = 0;
+                s_cur_pos++;
+                if (s_cur_pos >= s_cur.duration_samples) {
+                    s_cur_valid = false;
+                }
+            } else {
+                uint16_t gain = audio_cw_cursor_gain();
+                buf[i] = audio_cw_render_sample(s_phase, gain);
+                s_phase += phase_inc;
+
+                if (s_cur.kind == SEG_TONE && !s_rel_mode) {
+                    if (keyed_tally == 0) {
+                        keyed_gen = s_cur_gen;
+                    }
+                    keyed_tally++;
+                }
+
+                if (s_cur.kind == SEG_TONE_HOLD) {
+                    if (s_cur_pos < s_cur_attack_n) {
+                        s_cur_pos++; /* freeze position once the attack completes */
+                    }
+                } else {
+                    s_cur_pos++;
+                    if (s_cur_pos >= s_cur.duration_samples) {
+                        s_rel_mode = false;
+                        s_cur_valid = false;
+                    }
+                }
             }
-            if (command.type == AUDIO_CW_COMMAND_CONTINUOUS_TONE) {
-                s_sidetone_latched = false;
-            }
-            s_busy = false;
+
+            i++;
+        }
+
+        size_t bytes_written = 0;
+        if (!(s_output_ready &&
+              audio_output_port_write_pcm(buf, chunk, &bytes_written))) {
+            vTaskDelay(audio_cw_ms_to_delay_ticks(AUDIO_CW_TONE_CHUNK_MS));
+        }
+
+        /*
+         * Subtract after the chunk is committed so is_busy() tracks
+         * enqueued-to-DMA, not merely rendered. The generation guard drops the
+         * tally if a preempt reset the counter for a replacement element while
+         * this chunk was in flight.
+         */
+        if (keyed_tally > 0) {
+            audio_cw_busy_sub(keyed_tally, keyed_gen);
         }
     }
-}
-
-static void audio_cw_queue_command(const audio_cw_command_t *command)
-{
-    if (command == NULL) {
-        return;
-    }
-
-    s_hard_stop_requested = true;
-    s_stop_requested = true;
-
-    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
-        s_pending_command = *command;
-        s_command_pending = true;
-        audio_cw_unlock();
-    } else {
-        ESP_LOGW(TAG, "audio command queue busy; dropping command");
-        return;
-    }
-
-    if (s_audio_task != NULL) {
-        xTaskNotifyGive(s_audio_task);
-        return;
-    }
-
-    ESP_LOGW(TAG, "audio task unavailable; running command synchronously");
-    audio_cw_clear_pending_command();
-    s_stop_requested = false;
-    s_hard_stop_requested = false;
-    s_busy = true;
-    audio_cw_set_codec_active(true);
-    audio_cw_run_command(command);
-    uint32_t stop_silence_ms = audio_cw_command_stop_silence_ms(command);
-    if (stop_silence_ms > 0) {
-        audio_cw_write_silence_ms(stop_silence_ms, false);
-    }
-    audio_cw_set_codec_active(false);
-    if (command->type == AUDIO_CW_COMMAND_CONTINUOUS_TONE) {
-        s_sidetone_latched = false;
-    }
-    s_busy = false;
 }
 
 void audio_service_init(void)
@@ -887,10 +791,10 @@ void audio_service_init(void)
     s_output_ready = audio_output_port_init(&s_output_config);
     audio_service_set_output_muted(true);
 
-    if (s_command_mutex == NULL) {
-        s_command_mutex = xSemaphoreCreateMutex();
-        if (s_command_mutex == NULL) {
-            ESP_LOGW(TAG, "failed to create audio command mutex");
+    if (s_seg_mutex == NULL) {
+        s_seg_mutex = xSemaphoreCreateMutex();
+        if (s_seg_mutex == NULL) {
+            ESP_LOGW(TAG, "failed to create audio segment mutex");
         }
     }
 
@@ -914,7 +818,7 @@ void audio_service_init(void)
              (unsigned)s_farnsworth_wpm,
              (unsigned)s_volume_percent);
     ESP_LOGI(TAG, "tone output: %s", s_output_ready ? "ES8311/I2S" : "log/timing fallback");
-    ESP_LOGI(TAG, "CW playback: one-slot audio task, dit=1200/WPM");
+    ESP_LOGI(TAG, "CW playback: continuous PCM stream, dit=1200/WPM");
 }
 
 void audio_service_set_volume(uint8_t percent)
@@ -979,12 +883,11 @@ void audio_service_adjust_volume(int delta)
 
 void audio_service_play_feedback_beep(void)
 {
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_FEEDBACK_TONE,
-    };
-
-    ESP_LOGI(TAG, "queue feedback tone: %u ms", (unsigned)AUDIO_SERVICE_FEEDBACK_TONE_MS);
-    audio_cw_queue_command(&command);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_preempt_locked();
+        audio_cw_push_tone_locked(audio_cw_ms_to_samples(AUDIO_SERVICE_FEEDBACK_TONE_MS));
+        audio_cw_unlock();
+    }
 }
 
 void audio_service_play_feedback_tone(void)
@@ -994,64 +897,54 @@ void audio_service_play_feedback_tone(void)
 
 void audio_service_tone_on(void)
 {
-    if (s_sidetone_latched) {
+    if (s_hold_active) {
         return;
     }
 
-    if (s_audio_task == NULL) {
-        ESP_LOGW(TAG, "continuous sidetone unavailable without audio task");
-        return;
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_seg_clear();
+        s_text_active = false;
+        audio_cw_busy_clear();
+        audio_seg_t seg = {.kind = SEG_TONE_HOLD, .attack = true};
+        audio_cw_seg_push(&seg);
+        s_hold_active = true;
+        s_flush_requested = true; /* ramp down any leftover before the hold */
+        audio_cw_unlock();
+        ESP_LOGI(TAG, "sidetone on");
     }
-
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_CONTINUOUS_TONE,
-    };
-
-    s_sidetone_latched = true;
-    ESP_LOGI(TAG, "sidetone on");
-    audio_cw_queue_command(&command);
 }
 
 void audio_service_tone_off(void)
 {
-    if (!s_sidetone_latched) {
+    if (!s_hold_active) {
         return;
     }
 
-    s_sidetone_latched = false;
-    ESP_LOGI(TAG, "sidetone off");
-    s_hard_stop_requested = false;
-    s_stop_requested = true;
-    audio_cw_clear_pending_command();
-
-    if (s_audio_task != NULL) {
-        xTaskNotifyGive(s_audio_task);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_seg_clear();
+        s_hold_active = false;
+        audio_cw_busy_clear();
+        s_flush_requested = true; /* ramp the hold down */
+        audio_cw_unlock();
+        ESP_LOGI(TAG, "sidetone off");
     }
 }
 
-static void audio_service_play_keyer_tone(uint16_t duration_ms, const char *label)
+void audio_service_play_dit(uint16_t dit_ms_arg)
 {
-    if (duration_ms == 0) {
+    if (dit_ms_arg == 0) {
         return;
     }
 
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_TONE_MS,
-        .duration_ms = duration_ms,
-    };
-
-    ESP_LOGI(TAG, "queue keyer %s: %u ms", label, (unsigned)duration_ms);
-    audio_cw_queue_command(&command);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_push_tone_locked(audio_cw_ms_to_samples(dit_ms_arg));
+        audio_cw_unlock();
+    }
 }
 
-void audio_service_play_dit(uint16_t dit_ms)
+void audio_service_play_dah(uint16_t dit_ms_arg)
 {
-    audio_service_play_keyer_tone(dit_ms, "dit");
-}
-
-void audio_service_play_dah(uint16_t dit_ms)
-{
-    audio_service_play_keyer_tone((uint16_t)(3U * dit_ms), "dah");
+    audio_service_play_dit((uint16_t)(3U * dit_ms_arg));
 }
 
 static void audio_cw_set_wpm(uint8_t wpm)
@@ -1069,16 +962,6 @@ static void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm)
     ESP_LOGI(TAG, "set farnsworth wpm: %u", (unsigned)s_farnsworth_wpm);
 }
 
-static uint8_t audio_cw_get_wpm(void)
-{
-    return s_wpm;
-}
-
-static uint8_t audio_cw_get_farnsworth_wpm(void)
-{
-    return s_farnsworth_wpm;
-}
-
 static const char *audio_cw_get_pattern(char ch)
 {
     char normalized = (char)toupper((unsigned char)ch);
@@ -1091,89 +974,85 @@ static const char *audio_cw_get_pattern(char ch)
     return NULL;
 }
 
-static void audio_cw_play_text(const char *text)
+static void audio_cw_start_text(const char *text)
 {
     if (text == NULL || text[0] == '\0') {
         return;
     }
 
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_TEXT,
-    };
-    strncpy(command.text, text, sizeof(command.text) - 1U);
-    command.text[sizeof(command.text) - 1U] = '\0';
-
-    ESP_LOGI(TAG, "queue text: %s", command.text);
-    audio_cw_queue_command(&command);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_preempt_locked();
+        strncpy(s_text_src, text, sizeof(s_text_src) - 1U);
+        s_text_src[sizeof(s_text_src) - 1U] = '\0';
+        s_text_pos = 0;
+        s_text_active = (s_text_src[0] != '\0');
+        audio_cw_unlock();
+        ESP_LOGI(TAG, "play text: %s", s_text_src);
+    }
 }
 
-static void audio_cw_play_char(char ch)
+void audio_service_play_cw_text(const char *text)
 {
-    char normalized = (char)toupper((unsigned char)ch);
-    const char *pattern = audio_cw_get_pattern(normalized);
-    if (pattern == NULL) {
+    audio_cw_start_text(text);
+}
+
+void audio_service_play_cw_char(char ch)
+{
+    char buf[2] = {ch, '\0'};
+
+    if (audio_cw_get_pattern(ch) == NULL) {
         ESP_LOGW(TAG, "unsupported character: '%c'", ch);
         return;
     }
 
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_CHAR,
-        .ch = normalized,
-    };
-
-    ESP_LOGI(TAG, "queue char: %c %s", normalized, pattern);
-    audio_cw_queue_command(&command);
+    audio_cw_start_text(buf);
 }
 
-static void audio_cw_play_pattern(const char *pattern)
+void audio_service_play_cw_pattern(const char *pattern)
 {
     if (pattern == NULL || pattern[0] == '\0') {
         return;
     }
 
-    audio_cw_command_t command = {
-        .type = AUDIO_CW_COMMAND_PATTERN,
-    };
-    strncpy(command.pattern, pattern, sizeof(command.pattern) - 1U);
-    command.pattern[sizeof(command.pattern) - 1U] = '\0';
-
-    ESP_LOGI(TAG, "queue pattern: %s", command.pattern);
-    audio_cw_queue_command(&command);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_preempt_locked();
+        uint32_t unit = audio_cw_ms_to_samples(dit_ms());
+        for (const char *p = pattern; *p != '\0'; ++p) {
+            uint32_t units = (*p == '-') ? 3U : (*p == '.') ? 1U : 0U;
+            if (units == 0) {
+                continue;
+            }
+            audio_cw_push_tone_locked(unit * units);
+            if (p[1] != '\0') {
+                audio_cw_push_silence_locked(unit);
+            }
+        }
+        audio_cw_unlock();
+    }
 }
 
-static void audio_cw_play_symbol(char symbol)
+void audio_service_play_cw_symbol(char symbol)
 {
-    audio_cw_play_char(symbol);
+    audio_service_play_cw_char(symbol);
 }
 
-static void audio_cw_stop(void)
+void audio_service_stop_all(void)
 {
-    s_sidetone_latched = false;
-    s_hard_stop_requested = true;
-    s_stop_requested = true;
-    audio_cw_clear_pending_command();
-    audio_cw_set_codec_active(false);
-
-    if (s_audio_task != NULL) {
-        xTaskNotifyGive(s_audio_task);
+    if (audio_cw_lock(pdMS_TO_TICKS(20))) {
+        audio_cw_preempt_locked();
+        audio_cw_unlock();
     }
 
     ESP_LOGI(TAG, "stop all audio requested");
 }
 
-static bool audio_cw_is_busy(void)
-{
-    return s_busy || s_command_pending;
-}
-
-void audio_service_stop_all(void)
-{
-    audio_cw_stop();
-}
-
 bool audio_service_is_busy(void)
 {
-    return audio_cw_is_busy();
+    if (s_audio_task == NULL) {
+        return false;
+    }
+
+    return s_keyed_outstanding != 0U || s_hold_active || s_text_active;
 }
 
 void audio_service_set_cw_wpm(uint8_t wpm)
@@ -1183,7 +1062,7 @@ void audio_service_set_cw_wpm(uint8_t wpm)
 
 uint8_t audio_service_get_cw_wpm(void)
 {
-    return audio_cw_get_wpm();
+    return s_wpm;
 }
 
 void audio_service_set_cw_farnsworth_wpm(uint8_t effective_wpm)
@@ -1193,30 +1072,10 @@ void audio_service_set_cw_farnsworth_wpm(uint8_t effective_wpm)
 
 uint8_t audio_service_get_cw_farnsworth_wpm(void)
 {
-    return audio_cw_get_farnsworth_wpm();
+    return s_farnsworth_wpm;
 }
 
 const char *audio_service_get_cw_pattern(char ch)
 {
     return audio_cw_get_pattern(ch);
-}
-
-void audio_service_play_cw_text(const char *text)
-{
-    audio_cw_play_text(text);
-}
-
-void audio_service_play_cw_char(char ch)
-{
-    audio_cw_play_char(ch);
-}
-
-void audio_service_play_cw_pattern(const char *pattern)
-{
-    audio_cw_play_pattern(pattern);
-}
-
-void audio_service_play_cw_symbol(char symbol)
-{
-    audio_cw_play_symbol(symbol);
 }
