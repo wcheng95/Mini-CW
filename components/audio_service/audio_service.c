@@ -16,7 +16,6 @@
 #include "freertos/task.h"
 
 #include <ctype.h>
-#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
@@ -155,6 +154,12 @@ static uint16_t clamp_pitch(uint16_t hz)
     }
 
     return hz;
+}
+
+static int16_t audio_cw_square_sample(float phase, float gain)
+{
+    float polarity = phase < (AUDIO_CW_TWO_PI * 0.5f) ? 1.0f : -1.0f;
+    return (int16_t)(polarity * (float)AUDIO_CW_AMPLITUDE * gain);
 }
 
 static uint32_t dit_ms(void)
@@ -339,9 +344,9 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
                                         &release_samples);
 
     /*
-     * A sine sidetone is less harsh than the previous square wave because it
-     * avoids strong odd harmonics. The attack/release envelope prevents
-     * sharp jumps between silence and tone, which is the main source of clicks.
+     * Temporary square-wave sidetone test. The attack/release envelope still
+     * prevents sharp jumps between silence and tone, which is the main source
+     * of clicks.
      *
      * Phase is local to one dit/dah and intentionally preserved across all
      * chunks written by this call, so chunk boundaries cannot create phase
@@ -358,9 +363,7 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
                                                     total_samples,
                                                     attack_samples,
                                                     release_samples);
-            float sample = sinf(phase) * (float)AUDIO_CW_AMPLITUDE * envelope;
-
-            samples[i] = (int16_t)sample;
+            samples[i] = audio_cw_square_sample(phase, envelope);
 
             phase += phase_step;
             if (phase >= AUDIO_CW_TWO_PI) {
@@ -410,7 +413,7 @@ static void audio_cw_write_release_ramp(float phase)
                                    (float)(total_samples - 1U)
                              : 0.0f;
 
-            samples[i] = (int16_t)(sinf(phase) * (float)AUDIO_CW_AMPLITUDE * gain);
+            samples[i] = audio_cw_square_sample(phase, gain);
 
             phase += phase_step;
             if (phase >= AUDIO_CW_TWO_PI) {
@@ -463,7 +466,7 @@ static void audio_cw_write_continuous_tone(void)
                            : 0.0f;
             }
 
-            samples[i] = (int16_t)(sinf(phase) * (float)AUDIO_CW_AMPLITUDE * gain);
+            samples[i] = audio_cw_square_sample(phase, gain);
 
             phase += phase_step;
             if (phase >= AUDIO_CW_TWO_PI) {
