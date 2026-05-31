@@ -58,8 +58,16 @@ static esp_err_t board_audio_init_i2c()
 static esp_err_t board_audio_init_i2s()
 {
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.dma_desc_num = 6;
-    chan_cfg.dma_frame_num = 240;
+    /*
+     * 4 x 120 frames = 480 frames = 10 ms of TX buffering at 48 kHz (was
+     * 6 x 240 = 30 ms). The CW sidetone is self-monitored while keying, so the
+     * shallower buffer tightens the press-to-tone latency. Safe because the
+     * audio_service stream always feeds the codec (it never underruns), and the
+     * mic/RX side of this full-duplex channel is dormant at runtime. If a mic
+     * feature ever revives RX under load, bump back toward 4 x 180 (15 ms).
+     */
+    chan_cfg.dma_desc_num = 4;
+    chan_cfg.dma_frame_num = 120;
 
     ESP_RETURN_ON_ERROR(
         i2s_new_channel(&chan_cfg, &g_i2s_tx, &g_i2s_rx),
