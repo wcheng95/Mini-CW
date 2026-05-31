@@ -4,5 +4,7 @@ idf_component_register(
     REQUIRES
         audio_service
         keyer_service
-    PRIV_REQUIRES log
+    PRIV_REQUIRES
+        esp_hw_support
+        log
 )

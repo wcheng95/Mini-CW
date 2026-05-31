@@ -1,5 +1,8 @@
 idf_component_register(
     SRCS "storage_service.c"
     INCLUDE_DIRS "include"
-    PRIV_REQUIRES log
+    REQUIRES
+        cw_trainer_service
+    PRIV_REQUIRES
+        log
 )

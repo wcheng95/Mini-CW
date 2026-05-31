@@ -42,6 +42,51 @@ static app_state_t s_app = {
     .initialized = false,
 };
 
+static app_mode_t app_core_ui_mode_to_app(ui_service_mode_t mode)
+{
+    switch (mode) {
+    case UI_SERVICE_MODE_PRACTICE:
+        return APP_MODE_PRACTICE;
+    case UI_SERVICE_MODE_LESSONS:
+        return APP_MODE_LESSONS;
+    case UI_SERVICE_MODE_KEYER:
+    default:
+        return APP_MODE_KEYER;
+    }
+}
+
+static void app_core_sync_mode_from_ui(void)
+{
+    s_app.mode = app_core_ui_mode_to_app(ui_service_get_mode());
+    ESP_LOGI(TAG, "active mode: %s", app_core_mode_to_string(s_app.mode));
+}
+
+static void app_core_handle_lesson_select(void)
+{
+    const cw_lesson_view_t *view = cw_trainer_lesson_get_view();
+
+    if (view != NULL && view->state == CW_LESSON_STATE_COPYING) {
+        const cw_lesson_result_t *result = cw_trainer_lesson_submit();
+        storage_lesson_save_result(result);
+    } else {
+        cw_trainer_lesson_start();
+        storage_lesson_save_config(cw_trainer_lesson_get_config());
+    }
+
+    ui_service_refresh();
+}
+
+static void app_core_handle_char_input(char key)
+{
+    if (s_app.mode == APP_MODE_LESSONS) {
+        cw_trainer_lesson_append_char(key);
+    } else {
+        cw_trainer_handle_char_input(key);
+    }
+
+    ui_service_refresh();
+}
+
 static void app_core_handle_ui_event(ui_input_event_t event)
 {
     if (event.type == UI_INPUT_EVENT_NONE) {
@@ -50,7 +95,13 @@ static void app_core_handle_ui_event(ui_input_event_t event)
 
     if (event.type == UI_INPUT_EVENT_CANCEL) {
         ESP_LOGI(TAG, "cancel input received");
-        audio_service_stop_all();
+        if (s_app.mode == APP_MODE_LESSONS) {
+            cw_trainer_lesson_abort();
+        } else {
+            audio_service_stop_all();
+            cw_trainer_stop();
+        }
+        ui_service_refresh();
         return;
     }
 
@@ -62,6 +113,52 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         platform_hal_enter_deep_sleep();
         return;
     }
+
+    switch (event.type) {
+    case UI_INPUT_EVENT_MODE_CHANGED:
+        app_core_sync_mode_from_ui();
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_LESSON_CONFIG_CHANGED:
+        storage_lesson_save_config(cw_trainer_lesson_get_config());
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_SELECT:
+        if (s_app.mode == APP_MODE_LESSONS) {
+            app_core_handle_lesson_select();
+        }
+        break;
+    case UI_INPUT_EVENT_CHAR_INPUT:
+        app_core_handle_char_input(event.key);
+        break;
+    case UI_INPUT_EVENT_BACKSPACE:
+        if (s_app.mode == APP_MODE_LESSONS) {
+            cw_trainer_lesson_backspace();
+            ui_service_refresh();
+        }
+        break;
+    case UI_INPUT_EVENT_WPM_UP:
+        cw_trainer_adjust_wpm(1);
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_WPM_DOWN:
+        cw_trainer_adjust_wpm(-1);
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_PITCH_UP:
+        cw_trainer_adjust_pitch(50);
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_PITCH_DOWN:
+        cw_trainer_adjust_pitch(-50);
+        ui_service_refresh();
+        break;
+    case UI_INPUT_EVENT_NONE:
+    case UI_INPUT_EVENT_CANCEL:
+    case UI_INPUT_EVENT_SLEEP_REQUEST:
+    default:
+        break;
+    }
 }
 
 void app_core_init(void)
@@ -70,6 +167,10 @@ void app_core_init(void)
 
     ESP_LOGI(TAG, "init: platform_hal");
     platform_hal_init();
+
+    ESP_LOGI(TAG, "init: storage_service");
+    storage_service_init();
+    storage_profile_load();
 
     ESP_LOGI(TAG, "init: audio_service");
     audio_service_init();
@@ -80,14 +181,16 @@ void app_core_init(void)
     ESP_LOGI(TAG, "init: ui_service");
     ui_service_init();
 
-    ESP_LOGI(TAG, "init: storage_service");
-    storage_service_init();
-    storage_profile_load();
-
     ESP_LOGI(TAG, "init: cw_trainer_service");
     cw_trainer_service_init();
+    cw_lesson_config_t lesson_config = *cw_trainer_lesson_get_config();
+    cw_lesson_result_t lesson_result = {0};
+    if (storage_lesson_load(&lesson_config, &lesson_result)) {
+        cw_trainer_lesson_load_persisted(&lesson_config, &lesson_result);
+    }
 
     s_app.initialized = true;
+    app_core_sync_mode_from_ui();
     ui_service_show_demo_screen();
 
     ESP_LOGI(TAG, "Mini-CW service initialization complete");

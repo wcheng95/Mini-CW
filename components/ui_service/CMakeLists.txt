@@ -8,6 +8,7 @@ idf_component_register(
     PRIV_REQUIRES
         M5Cardputer
         audio_service
+        cw_trainer_service
         freertos
         keyer_service
         log

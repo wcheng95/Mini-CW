@@ -20,10 +20,13 @@ typedef enum {
     UI_INPUT_EVENT_CANCEL,
     UI_INPUT_EVENT_SELECT,
     UI_INPUT_EVENT_CHAR_INPUT,
+    UI_INPUT_EVENT_BACKSPACE,
     UI_INPUT_EVENT_WPM_UP,
     UI_INPUT_EVENT_WPM_DOWN,
     UI_INPUT_EVENT_PITCH_UP,
     UI_INPUT_EVENT_PITCH_DOWN,
+    UI_INPUT_EVENT_MODE_CHANGED,
+    UI_INPUT_EVENT_LESSON_CONFIG_CHANGED,
     UI_INPUT_EVENT_SLEEP_REQUEST,
 } ui_input_event_type_t;
 
@@ -32,8 +35,17 @@ typedef struct {
     char key;
 } ui_input_event_t;
 
+typedef enum {
+    UI_SERVICE_MODE_PRACTICE = 0,
+    UI_SERVICE_MODE_KEYER,
+    UI_SERVICE_MODE_LESSONS,
+} ui_service_mode_t;
+
 void ui_service_init(void);
 void ui_service_show_demo_screen(void);
+void ui_service_refresh(void);
+ui_service_mode_t ui_service_get_mode(void);
+void ui_service_set_mode(ui_service_mode_t mode);
 void ui_service_enter_global_menu(void);
 void ui_service_exit_global_menu(void);
 void ui_service_enter_local_menu(void);

@@ -33,7 +33,7 @@ static const char *TAG = "audio_service";
 #define AUDIO_CW_STOP_SILENCE_MS 80
 #define AUDIO_CW_AMPLITUDE 12000
 #define AUDIO_CW_TASK_STACK_BYTES 6144
-#define AUDIO_CW_COMMAND_TEXT_MAX 64
+#define AUDIO_CW_COMMAND_TEXT_MAX 1024
 #define AUDIO_CW_COMMAND_PATTERN_MAX 16
 #define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 80
 #define AUDIO_SERVICE_MAX_VOLUME_PERCENT 99
@@ -102,6 +102,11 @@ static const morse_entry_t MORSE_TABLE[] = {
     {'7', "--..."},
     {'8', "---.."},
     {'9', "----."},
+    {'.', ".-.-.-"},
+    {',', "--..--"},
+    {'?', "..--.."},
+    {'/', "-..-."},
+    {'=', "-...-"},
 };
 
 static uint16_t s_pitch_hz = 700;
@@ -165,6 +170,18 @@ static int16_t audio_cw_square_sample(float phase, float gain)
 static uint32_t dit_ms(void)
 {
     return 1200U / s_wpm;
+}
+
+static uint32_t farnsworth_dit_ms(void)
+{
+    uint8_t effective_wpm = s_farnsworth_wpm;
+
+    if (effective_wpm == 0U || effective_wpm > s_wpm) {
+        effective_wpm = s_wpm;
+    }
+
+    effective_wpm = clamp_wpm(effective_wpm);
+    return 1200U / effective_wpm;
 }
 
 static TickType_t audio_cw_ms_to_delay_ticks(uint32_t ms)
@@ -308,9 +325,8 @@ static float audio_cw_envelope_gain(uint32_t sample_index,
     return gain;
 }
 
-static void audio_cw_gap_units(uint32_t units)
+static void audio_cw_gap_ms(uint32_t delay_ms)
 {
-    uint32_t delay_ms = dit_ms() * units;
     if (delay_ms > 0) {
         audio_cw_write_silence_ms(delay_ms, true);
     }
@@ -512,7 +528,7 @@ static void audio_cw_play_pattern_blocking(const char *pattern)
 
         if (p[1] != '\0' && !s_stop_requested) {
             ESP_LOGI(TAG, "element gap: %u ms", (unsigned)unit_ms);
-            audio_cw_gap_units(1);
+            audio_cw_gap_ms(unit_ms);
         }
     }
 }
@@ -534,8 +550,8 @@ static void audio_cw_play_char_blocking(char ch)
     audio_cw_play_pattern_blocking(pattern);
 
     if (!s_stop_requested) {
-        ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(dit_ms() * 3U));
-        audio_cw_gap_units(3);
+        ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(farnsworth_dit_ms() * 3U));
+        audio_cw_gap_ms(farnsworth_dit_ms() * 3U);
     }
 }
 
@@ -549,8 +565,8 @@ static void audio_cw_play_text_blocking(const char *text)
 
     for (const char *p = text; *p != '\0' && !s_stop_requested; ++p) {
         if (*p == ' ') {
-            ESP_LOGI(TAG, "word gap: %u ms", (unsigned)(dit_ms() * 7U));
-            audio_cw_gap_units(7);
+            ESP_LOGI(TAG, "word gap: %u ms", (unsigned)(farnsworth_dit_ms() * 7U));
+            audio_cw_gap_ms(farnsworth_dit_ms() * 7U);
             continue;
         }
 
@@ -564,8 +580,8 @@ static void audio_cw_play_text_blocking(const char *text)
         audio_cw_play_pattern_blocking(pattern);
 
         if (p[1] != '\0' && p[1] != ' ' && !s_stop_requested) {
-            ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(dit_ms() * 3U));
-            audio_cw_gap_units(3);
+            ESP_LOGI(TAG, "character gap: %u ms", (unsigned)(farnsworth_dit_ms() * 3U));
+            audio_cw_gap_ms(farnsworth_dit_ms() * 3U);
         }
     }
 }
@@ -907,7 +923,10 @@ static void audio_cw_set_wpm(uint8_t wpm)
 
 static void audio_cw_set_farnsworth_wpm(uint8_t effective_wpm)
 {
-    s_farnsworth_wpm = effective_wpm;
+    s_farnsworth_wpm = clamp_wpm(effective_wpm);
+    if (s_farnsworth_wpm > s_wpm) {
+        s_farnsworth_wpm = s_wpm;
+    }
     ESP_LOGI(TAG, "set farnsworth wpm: %u", (unsigned)s_farnsworth_wpm);
 }
 
