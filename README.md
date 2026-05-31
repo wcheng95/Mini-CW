@@ -4,6 +4,8 @@
 * KeyOut: G3-Tip, G6-Ring — to radio
 * Debug: G4-TX, G5-RX — not required for normal use
 
+![Adaptor](mini-cw_adaptor.jpeg)
+
 # Mini-CW User Manual
 
 Mini-CW is a CW/Morse practice and keyer project for the M5 Cardputer ADV. This manual describes the current early development version.
