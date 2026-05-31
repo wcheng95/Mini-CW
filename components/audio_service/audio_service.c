@@ -16,9 +16,14 @@
 #include "freertos/task.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 
 static const char *TAG = "audio_service";
 
@@ -38,7 +43,18 @@ static const char *TAG = "audio_service";
 #define AUDIO_SERVICE_DEFAULT_VOLUME_PERCENT 40
 #define AUDIO_SERVICE_MAX_VOLUME_PERCENT 99
 #define AUDIO_SERVICE_FEEDBACK_TONE_MS 50
-#define AUDIO_CW_TWO_PI 6.28318530717958647692f
+/*
+ * Sine sidetone DDS, ported from the Mini-FT8 qdx dds_q15 NCO: a 64-bit
+ * free-running phase accumulator drives a 257-entry quarter-wave Q15 sine
+ * table with 10-bit linear interpolation. The same quarter-wave table also
+ * supplies the raised-cosine key envelope, because
+ * (1 - cos(pi*t)) / 2 == sin^2(pi*t/2) and pi*t/2 spans exactly [0, pi/2].
+ */
+#define DDS_QTABLE_BITS 8u
+#define DDS_FRAC_BITS 10u
+#define DDS_QTABLE_SIZE (1u << DDS_QTABLE_BITS)
+#define DDS_VISIBLE_BITS (2u + DDS_QTABLE_BITS + DDS_FRAC_BITS)
+#define DDS_PHASE_BITS 64u
 
 typedef struct {
     char ch;
@@ -122,6 +138,8 @@ static volatile bool s_sidetone_latched;
 static TaskHandle_t s_audio_task;
 static SemaphoreHandle_t s_command_mutex;
 static audio_cw_command_t s_pending_command;
+static int16_t s_sin_quarter[DDS_QTABLE_SIZE + 1];
+static uint64_t s_phase;
 
 static audio_output_port_config_t s_output_config = {
     .sample_rate_hz = AUDIO_CW_DEFAULT_SAMPLE_RATE_HZ,
@@ -161,10 +179,94 @@ static uint16_t clamp_pitch(uint16_t hz)
     return hz;
 }
 
-static int16_t audio_cw_square_sample(float phase, float gain)
+static uint64_t audio_cw_phase_inc(void)
 {
-    float polarity = phase < (AUDIO_CW_TWO_PI * 0.5f) ? 1.0f : -1.0f;
-    return (int16_t)(polarity * (float)AUDIO_CW_AMPLITUDE * gain);
+    /* inc = f * 2^64 / fs, matching dds_q15 inc_from_hz(). */
+    long double num = (long double)s_pitch_hz * (long double)(1ULL << 63) * 2.0L;
+    long double den = (long double)s_output_config.sample_rate_hz;
+
+    if (den <= 0.0L) {
+        return 0;
+    }
+
+    return (uint64_t)llroundl(num / den);
+}
+
+static void audio_cw_init_sine_lut(void)
+{
+    const double step = (M_PI / 2.0) / (double)DDS_QTABLE_SIZE;
+
+    for (unsigned n = 0; n <= DDS_QTABLE_SIZE; ++n) {
+        double s = sin(step * (double)n);
+        int32_t q = (int32_t)lround(s * 32767.0);
+        if (q > 32767) {
+            q = 32767;
+        }
+        if (q < -32768) {
+            q = -32768;
+        }
+        s_sin_quarter[n] = (int16_t)q;
+    }
+}
+
+/* Sample sin(phase) from the quarter-wave LUT with linear interpolation. */
+static inline int16_t audio_cw_sin_q15(uint64_t phase)
+{
+    uint32_t v = (uint32_t)(phase >> (DDS_PHASE_BITS - DDS_VISIBLE_BITS));
+    uint32_t quad = v >> (DDS_QTABLE_BITS + DDS_FRAC_BITS);                  /* 0..3 */
+    uint32_t xf = v & ((1u << (DDS_QTABLE_BITS + DDS_FRAC_BITS)) - 1u);
+    uint32_t idx = xf >> DDS_FRAC_BITS;
+    uint32_t frac = xf & ((1u << DDS_FRAC_BITS) - 1u);
+
+    /* Mirror in odd quadrants (Q1, Q3): position = QTABLE_SIZE - position. */
+    if (quad & 1u) {
+        idx = DDS_QTABLE_SIZE - ((xf + ((1u << DDS_FRAC_BITS) - 1u)) >> DDS_FRAC_BITS);
+        frac = (0u - frac) & ((1u << DDS_FRAC_BITS) - 1u);
+    }
+
+    int32_t y;
+    if (idx >= DDS_QTABLE_SIZE) {
+        y = s_sin_quarter[DDS_QTABLE_SIZE];
+    } else {
+        int32_t y0 = s_sin_quarter[idx];
+        int32_t y1 = s_sin_quarter[idx + 1];
+        int32_t dif = y1 - y0;
+        int32_t acc = dif * (int32_t)frac;
+        y = y0 + ((acc + (1 << (DDS_FRAC_BITS - 1))) >> DDS_FRAC_BITS);
+    }
+
+    if (quad >= 2u) {
+        y = -y;
+    }
+
+    return (int16_t)y;
+}
+
+/*
+ * Raised-cosine rising-edge gain (Q15) at sample i of an n-sample edge:
+ * (1 - cos(pi*i/n)) / 2 == sin^2(pi*i/(2n)). The quarter-wave sine LUT spans
+ * exactly [0, pi/2], so squaring its lookup yields the envelope without a
+ * second table. A falling edge is the same curve indexed as (n - 1 - i), so
+ * the last sample lands on exact silence, matching copy_trainer.py.
+ */
+static uint16_t audio_cw_rcos_rise_q15(uint32_t i, uint32_t n)
+{
+    if (n == 0 || i >= n) {
+        return 32767;
+    }
+
+    uint32_t idx = (uint32_t)(((uint64_t)i * DDS_QTABLE_SIZE) / n);
+    int32_t s = s_sin_quarter[idx];
+    return (uint16_t)(((int32_t)s * s) >> 15);
+}
+
+/* Quarter-wave sine scaled by the Q15 key envelope and the tone amplitude. */
+static int16_t audio_cw_render_sample(uint64_t phase, uint16_t env_q15)
+{
+    int32_t s = audio_cw_sin_q15(phase);
+    s = (s * (int32_t)env_q15) >> 15;
+    s = (s * AUDIO_CW_AMPLITUDE) >> 15;
+    return (int16_t)s;
 }
 
 static uint32_t dit_ms(void)
@@ -292,30 +394,27 @@ static void audio_cw_calculate_envelope_samples(uint32_t total_samples,
     }
 }
 
-static float audio_cw_envelope_gain(uint32_t sample_index,
-                                    uint32_t total_samples,
-                                    uint32_t attack_samples,
-                                    uint32_t release_samples)
+static uint16_t audio_cw_envelope_gain_q15(uint32_t sample_index,
+                                           uint32_t total_samples,
+                                           uint32_t attack_samples,
+                                           uint32_t release_samples)
 {
-    float gain = 1.0f;
+    uint16_t gain = 32767;
 
     if (total_samples == 0) {
-        return 0.0f;
+        return 0;
     }
 
     if (attack_samples > 0 && sample_index < attack_samples) {
-        gain = attack_samples > 1
-                   ? (float)sample_index / (float)(attack_samples - 1U)
-                   : 0.0f;
+        gain = audio_cw_rcos_rise_q15(sample_index, attack_samples);
     }
 
     if (release_samples > 0) {
         const uint32_t release_start = total_samples - release_samples;
         if (sample_index >= release_start) {
-            float release_gain = release_samples > 1
-                                     ? (float)(total_samples - 1U - sample_index) /
-                                           (float)(release_samples - 1U)
-                                     : 0.0f;
+            uint32_t pos_in_release = sample_index - release_start;
+            uint16_t release_gain =
+                audio_cw_rcos_rise_q15(release_samples - 1U - pos_in_release, release_samples);
             if (release_gain < gain) {
                 gain = release_gain;
             }
@@ -346,13 +445,13 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
     uint32_t samples_written = 0;
     uint32_t attack_samples = 0;
     uint32_t release_samples = 0;
-    float phase = 0.0f;
 
     if (total_samples == 0 || max_chunk_samples == 0) {
         return;
     }
 
-    const float phase_step = (AUDIO_CW_TWO_PI * (float)s_pitch_hz) / (float)sample_rate;
+    const uint64_t phase_inc = audio_cw_phase_inc();
+    uint64_t phase = s_phase;
 
     audio_cw_calculate_envelope_samples(total_samples,
                                         sample_rate,
@@ -360,14 +459,11 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
                                         &release_samples);
 
     /*
-     * Temporary square-wave sidetone test. The attack/release envelope still
-     * prevents sharp jumps between silence and tone, which is the main source
-     * of clicks.
-     *
-     * Phase is local to one dit/dah and intentionally preserved across all
-     * chunks written by this call, so chunk boundaries cannot create phase
-     * discontinuities. Separate Morse elements ramp down to silence and then
-     * ramp up again, so global phase continuity between calls is unnecessary.
+     * Pure sine sidetone from the shared quarter-wave DDS table with a
+     * raised-cosine attack/release. The phase accumulator is seeded from the
+     * persistent s_phase and never reset here, so consecutive dits/dahs stay
+     * phase continuous; the envelope still returns to ~zero at both ends, so
+     * element boundaries cannot click regardless of where phase lands.
      */
     while (samples_written < total_samples && !s_stop_requested) {
         uint32_t remaining = total_samples - samples_written;
@@ -375,16 +471,12 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
 
         for (uint32_t i = 0; i < chunk_samples; ++i) {
             uint32_t sample_index = samples_written + i;
-            float envelope = audio_cw_envelope_gain(sample_index,
-                                                    total_samples,
-                                                    attack_samples,
-                                                    release_samples);
-            samples[i] = audio_cw_square_sample(phase, envelope);
-
-            phase += phase_step;
-            if (phase >= AUDIO_CW_TWO_PI) {
-                phase -= AUDIO_CW_TWO_PI;
-            }
+            uint16_t envelope = audio_cw_envelope_gain_q15(sample_index,
+                                                           total_samples,
+                                                           attack_samples,
+                                                           release_samples);
+            samples[i] = audio_cw_render_sample(phase, envelope);
+            phase += phase_inc;
         }
 
         size_t bytes_written = 0;
@@ -396,9 +488,11 @@ static void audio_cw_write_tone_ms(uint32_t duration_ms)
 
         samples_written += chunk_samples;
     }
+
+    s_phase = phase;
 }
 
-static void audio_cw_write_release_ramp(float phase)
+static void audio_cw_write_release_ramp(void)
 {
     if (!audio_cw_sample_rate_supported(s_output_config.sample_rate_hz)) {
         return;
@@ -416,7 +510,8 @@ static void audio_cw_write_release_ramp(float phase)
         return;
     }
 
-    const float phase_step = (AUDIO_CW_TWO_PI * (float)s_pitch_hz) / (float)sample_rate;
+    const uint64_t phase_inc = audio_cw_phase_inc();
+    uint64_t phase = s_phase;
 
     while (samples_written < total_samples && !s_hard_stop_requested) {
         uint32_t remaining = total_samples - samples_written;
@@ -424,17 +519,10 @@ static void audio_cw_write_release_ramp(float phase)
 
         for (uint32_t i = 0; i < chunk_samples; ++i) {
             uint32_t sample_index = samples_written + i;
-            float gain = total_samples > 1
-                             ? (float)(total_samples - 1U - sample_index) /
-                                   (float)(total_samples - 1U)
-                             : 0.0f;
+            uint16_t gain = audio_cw_rcos_rise_q15(total_samples - 1U - sample_index, total_samples);
 
-            samples[i] = audio_cw_square_sample(phase, gain);
-
-            phase += phase_step;
-            if (phase >= AUDIO_CW_TWO_PI) {
-                phase -= AUDIO_CW_TWO_PI;
-            }
+            samples[i] = audio_cw_render_sample(phase, gain);
+            phase += phase_inc;
         }
 
         size_t bytes_written = 0;
@@ -446,6 +534,8 @@ static void audio_cw_write_release_ramp(float phase)
 
         samples_written += chunk_samples;
     }
+
+    s_phase = phase;
 }
 
 static void audio_cw_write_continuous_tone(void)
@@ -461,7 +551,6 @@ static void audio_cw_write_continuous_tone(void)
         (uint32_t)(((uint64_t)sample_rate * AUDIO_CW_ENVELOPE_MS) / 1000U);
     int16_t samples[(AUDIO_CW_MAX_SAMPLE_RATE_HZ * AUDIO_CW_TONE_CHUNK_MS) / 1000U];
     uint64_t generated_samples = 0;
-    float phase = 0.0f;
 
     if (chunk_samples == 0) {
         return;
@@ -471,24 +560,17 @@ static void audio_cw_write_continuous_tone(void)
         attack_samples = 1;
     }
 
-    const float phase_step = (AUDIO_CW_TWO_PI * (float)s_pitch_hz) / (float)sample_rate;
+    const uint64_t phase_inc = audio_cw_phase_inc();
+    uint64_t phase = s_phase;
 
     while (!s_stop_requested) {
         for (uint32_t i = 0; i < chunk_samples; ++i) {
-            float gain = 1.0f;
-            if (generated_samples < attack_samples) {
-                gain = attack_samples > 1
-                           ? (float)generated_samples / (float)(attack_samples - 1U)
-                           : 0.0f;
-            }
+            uint16_t gain = (generated_samples < attack_samples)
+                                ? audio_cw_rcos_rise_q15((uint32_t)generated_samples, attack_samples)
+                                : 32767;
 
-            samples[i] = audio_cw_square_sample(phase, gain);
-
-            phase += phase_step;
-            if (phase >= AUDIO_CW_TWO_PI) {
-                phase -= AUDIO_CW_TWO_PI;
-            }
-
+            samples[i] = audio_cw_render_sample(phase, gain);
+            phase += phase_inc;
             ++generated_samples;
         }
 
@@ -500,8 +582,10 @@ static void audio_cw_write_continuous_tone(void)
         }
     }
 
+    s_phase = phase;
+
     if (!s_hard_stop_requested) {
-        audio_cw_write_release_ramp(phase);
+        audio_cw_write_release_ramp();
     }
 }
 
@@ -742,6 +826,7 @@ static void audio_cw_queue_command(const audio_cw_command_t *command)
 
 void audio_service_init(void)
 {
+    audio_cw_init_sine_lut();
     s_output_config.volume_percent = s_volume_percent;
     s_wpm = clamp_wpm(s_wpm);
     s_pitch_hz = clamp_pitch(s_pitch_hz);
