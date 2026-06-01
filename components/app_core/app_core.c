@@ -67,6 +67,91 @@ static void app_core_sync_mode_from_ui(void)
     ESP_LOGI(TAG, "active mode: %s", app_core_mode_to_string(s_app.mode));
 }
 
+static storage_system_config_t app_core_current_system_config(void)
+{
+    return (storage_system_config_t){
+        .volume = audio_service_get_volume(),
+        .tone_hz = audio_service_get_tone_hz(),
+        .key_in_mode = keyer_service_get_key_in_mode(),
+        .key_in_wpm = keyer_service_get_key_in_wpm(),
+    };
+}
+
+static bool app_core_system_config_equal(const storage_system_config_t *a,
+                                         const storage_system_config_t *b)
+{
+    if (a == NULL || b == NULL) {
+        return false;
+    }
+
+    return a->volume == b->volume && a->tone_hz == b->tone_hz &&
+           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm;
+}
+
+static void app_core_save_system_config(void)
+{
+    storage_system_config_t config = app_core_current_system_config();
+    storage_system_save_config(&config);
+}
+
+static void app_core_apply_system_config(const storage_system_config_t *config)
+{
+    if (config == NULL) {
+        return;
+    }
+
+    audio_service_set_volume(config->volume);
+    audio_service_set_tone_hz(config->tone_hz);
+    keyer_service_set_key_in_mode(config->key_in_mode);
+    keyer_service_set_key_in_wpm(config->key_in_wpm);
+}
+
+static void app_core_load_persisted_settings(void)
+{
+    storage_system_config_t system_config;
+    cw_lesson_config_t lesson_config;
+    cw_lesson_result_t lesson_result = {0};
+    cw_word_config_t word_config;
+    cw_word_result_t word_result = {0};
+    cw_callsign_config_t callsign_config;
+    cw_callsign_result_t callsign_result = {0};
+    cw_plaintext_config_t plaintext_config;
+    cw_plaintext_result_t plaintext_result = {0};
+
+    if (!storage_profile_load()) {
+        return;
+    }
+
+    system_config = app_core_current_system_config();
+    if (storage_system_load_config(&system_config)) {
+        app_core_apply_system_config(&system_config);
+        storage_system_config_t applied_config = app_core_current_system_config();
+        if (!app_core_system_config_equal(&system_config, &applied_config)) {
+            storage_system_save_config(&applied_config);
+        }
+    }
+
+    lesson_config = *cw_trainer_lesson_get_config();
+    if (storage_lesson_load(&lesson_config, &lesson_result)) {
+        cw_trainer_lesson_load_persisted(&lesson_config, &lesson_result);
+    }
+
+    word_config = *cw_trainer_word_get_config();
+    if (storage_word_load(&word_config, &word_result)) {
+        cw_trainer_word_load_persisted(&word_config, &word_result);
+    }
+
+    callsign_config = *cw_trainer_callsign_get_config();
+    if (storage_callsign_load(&callsign_config, &callsign_result)) {
+        cw_trainer_callsign_load_persisted(&callsign_config, &callsign_result);
+    }
+
+    plaintext_config = *cw_trainer_plaintext_get_config();
+    if (storage_plaintext_load(&plaintext_config, &plaintext_result)) {
+        cw_trainer_plaintext_load_persisted(&plaintext_config, &plaintext_result);
+    }
+}
+
 static void app_core_handle_lesson_select(void)
 {
     const cw_lesson_view_t *view = cw_trainer_lesson_get_view();
@@ -141,6 +226,7 @@ static void app_core_handle_volume_changed(const ui_input_event_t *event)
 
     audio_service_set_volume((uint8_t)event->value);
     audio_service_play_feedback_beep();
+    app_core_save_system_config();
     ui_service_refresh();
 }
 
@@ -151,6 +237,7 @@ static void app_core_handle_key_in_wpm_changed(const ui_input_event_t *event)
     }
 
     keyer_service_set_key_in_wpm((uint8_t)event->value);
+    app_core_save_system_config();
     ui_service_refresh();
 }
 
@@ -163,6 +250,7 @@ static void app_core_handle_key_in_mode_changed(const ui_input_event_t *event)
     }
 
     keyer_service_cycle_key_in_mode(direction);
+    app_core_save_system_config();
     ui_service_refresh();
 }
 
@@ -175,7 +263,9 @@ static void app_core_handle_usb_drive_changed(const ui_input_event_t *event)
     }
 
     /* Storage owns FATFS and USB MSC; app_core only routes the UI request. */
-    (void)storage_usb_drive_set_enabled(enabled);
+    if (storage_usb_drive_set_enabled(enabled) && !enabled) {
+        app_core_load_persisted_settings();
+    }
     ui_service_refresh();
 }
 
@@ -501,7 +591,6 @@ void app_core_init(void)
 
     ESP_LOGI(TAG, "init: storage_service");
     storage_service_init();
-    storage_profile_load();
 
     ESP_LOGI(TAG, "init: audio_service");
     audio_service_init();
@@ -514,26 +603,7 @@ void app_core_init(void)
 
     ESP_LOGI(TAG, "init: cw_trainer_service");
     cw_trainer_service_init();
-    cw_lesson_config_t lesson_config = *cw_trainer_lesson_get_config();
-    cw_lesson_result_t lesson_result = {0};
-    if (storage_lesson_load(&lesson_config, &lesson_result)) {
-        cw_trainer_lesson_load_persisted(&lesson_config, &lesson_result);
-    }
-    cw_word_config_t word_config = *cw_trainer_word_get_config();
-    cw_word_result_t word_result = {0};
-    if (storage_word_load(&word_config, &word_result)) {
-        cw_trainer_word_load_persisted(&word_config, &word_result);
-    }
-    cw_callsign_config_t callsign_config = *cw_trainer_callsign_get_config();
-    cw_callsign_result_t callsign_result = {0};
-    if (storage_callsign_load(&callsign_config, &callsign_result)) {
-        cw_trainer_callsign_load_persisted(&callsign_config, &callsign_result);
-    }
-    cw_plaintext_config_t plaintext_config = *cw_trainer_plaintext_get_config();
-    cw_plaintext_result_t plaintext_result = {0};
-    if (storage_plaintext_load(&plaintext_config, &plaintext_result)) {
-        cw_trainer_plaintext_load_persisted(&plaintext_config, &plaintext_result);
-    }
+    app_core_load_persisted_settings();
 
     s_app.initialized = true;
     app_core_sync_mode_from_ui();

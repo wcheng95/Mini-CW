@@ -2,24 +2,36 @@
  * storage_service
  *
  * Responsibility: Owns profile, lesson, and session log persistence.
- * Hardware ownership: SD/SPIFFS/file access. Other modules must use
+ * Hardware ownership: FATFS/file access and USB MSC exposure. Other modules must use
  * storage_service APIs instead of touching file or filesystem APIs directly.
  */
 
 #pragma once
 
 #include "cw_trainer_service.h"
+#include "keyer_service.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void storage_service_init(void);
+
+typedef struct {
+    uint8_t volume;
+    uint16_t tone_hz;
+    keyer_io_mode_t key_in_mode;
+    uint8_t key_in_wpm;
+} storage_system_config_t;
+
 bool storage_profile_load(void);
 bool storage_profile_save(void);
 bool storage_session_log_append(const char *line);
+bool storage_system_load_config(storage_system_config_t *config);
+bool storage_system_save_config(const storage_system_config_t *config);
 bool storage_lesson_load(cw_lesson_config_t *config, cw_lesson_result_t *result);
 bool storage_lesson_save_config(const cw_lesson_config_t *config);
 bool storage_lesson_save_result(const cw_lesson_result_t *result);

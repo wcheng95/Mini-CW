@@ -3,6 +3,7 @@ idf_component_register(
     INCLUDE_DIRS "include"
     REQUIRES
         cw_trainer_service
+        keyer_service
     PRIV_REQUIRES
         esp_partition
         fatfs
