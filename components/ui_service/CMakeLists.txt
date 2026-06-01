@@ -13,4 +13,5 @@ idf_component_register(
         keyer_service
         log
         platform_hal
+        storage_service
 )

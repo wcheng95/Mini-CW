@@ -4,5 +4,8 @@ idf_component_register(
     REQUIRES
         cw_trainer_service
     PRIV_REQUIRES
+        esp_partition
+        fatfs
         log
+        wear_levelling
 )

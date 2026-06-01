@@ -166,6 +166,19 @@ static void app_core_handle_key_in_mode_changed(const ui_input_event_t *event)
     ui_service_refresh();
 }
 
+static void app_core_handle_usb_drive_changed(const ui_input_event_t *event)
+{
+    bool enabled = !storage_usb_drive_is_enabled();
+
+    if (event != NULL && event->setting == UI_SETTING_USB_DRIVE) {
+        enabled = event->value != 0;
+    }
+
+    /* Storage owns FATFS and USB MSC; app_core only routes the UI request. */
+    (void)storage_usb_drive_set_enabled(enabled);
+    ui_service_refresh();
+}
+
 static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
 {
     cw_lesson_config_t config = *cw_trainer_lesson_get_config();
@@ -200,6 +213,7 @@ static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
         case UI_SETTING_CALLSIGN_MAX_WPM:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
+        case UI_SETTING_USB_DRIVE:
         default:
             break;
         }
@@ -243,6 +257,7 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
         case UI_SETTING_CALLSIGN_MAX_WPM:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
+        case UI_SETTING_USB_DRIVE:
         default:
             break;
         }
@@ -284,6 +299,7 @@ static void app_core_handle_callsign_config_changed(const ui_input_event_t *even
         case UI_SETTING_WORD_MAX_LEN:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
+        case UI_SETTING_USB_DRIVE:
         default:
             break;
         }
@@ -323,6 +339,7 @@ static void app_core_handle_plaintext_config_changed(const ui_input_event_t *eve
         case UI_SETTING_CALLSIGN_SPEED:
         case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
         case UI_SETTING_CALLSIGN_MAX_WPM:
+        case UI_SETTING_USB_DRIVE:
         default:
             break;
         }
@@ -409,6 +426,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         break;
     case UI_INPUT_EVENT_PLAINTEXT_CONFIG_CHANGED:
         app_core_handle_plaintext_config_changed(&event);
+        break;
+    case UI_INPUT_EVENT_USB_DRIVE_CHANGED:
+        app_core_handle_usb_drive_changed(&event);
         break;
     case UI_INPUT_EVENT_SELECT:
         if (s_app.mode == APP_MODE_PLAINTEXT) {

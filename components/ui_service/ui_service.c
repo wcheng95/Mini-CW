@@ -21,6 +21,7 @@
 #include "esp_log.h"
 #include "keyer_service.h"
 #include "platform_hal.h"
+#include "storage_service.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -1210,7 +1211,10 @@ static void ui_service_render_system_menu(void)
              sizeof(screen.line[3]),
              "4 Sleep/Batt %d%%",
              ui_service_read_battery_percent());
-    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5 Date");
+    snprintf(screen.line[4],
+             sizeof(screen.line[4]),
+             "5 USB Drive:%s",
+             storage_usb_drive_is_enabled() ? "ON" : "OFF");
     ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 Time");
 
     ui_screen_render(&screen);
@@ -1490,6 +1494,16 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
     if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 4U) {
         ui_service_set_event(out_event, UI_INPUT_EVENT_SLEEP_REQUEST, key);
         ESP_LOGI(TAG, "sleep requested from system menu");
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 5U) {
+        ui_service_set_event(out_event, UI_INPUT_EVENT_USB_DRIVE_CHANGED, key);
+        if (out_event != NULL) {
+            out_event->setting = UI_SETTING_USB_DRIVE;
+            out_event->value = storage_usb_drive_is_enabled() ? 0 : 1;
+            out_event->delta = storage_usb_drive_is_enabled() ? -1 : 1;
+        }
         return true;
     }
 

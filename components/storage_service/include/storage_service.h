@@ -32,6 +32,9 @@ bool storage_callsign_save_result(const cw_callsign_result_t *result);
 bool storage_plaintext_load(cw_plaintext_config_t *config, cw_plaintext_result_t *result);
 bool storage_plaintext_save_config(const cw_plaintext_config_t *config);
 bool storage_plaintext_save_result(const cw_plaintext_result_t *result);
+bool storage_fatfs_is_mounted(void);
+bool storage_usb_drive_is_enabled(void);
+bool storage_usb_drive_set_enabled(bool enabled);
 
 #ifdef __cplusplus
 }
