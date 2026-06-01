@@ -14,7 +14,7 @@ extern "C" {
 #endif
 
 typedef enum {
-    APP_MODE_PRACTICE = 0,
+    APP_MODE_PLAINTEXT = 0,
     APP_MODE_KEYER,
     APP_MODE_LESSONS,
     APP_MODE_WORDS,

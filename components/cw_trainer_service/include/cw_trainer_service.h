@@ -174,6 +174,51 @@ const cw_callsign_view_t *cw_trainer_callsign_get_view(void);
 void cw_trainer_callsign_load_persisted(const cw_callsign_config_t *config,
                                         const cw_callsign_result_t *result);
 
+typedef struct {
+    uint8_t code_wpm;
+    uint8_t effective_wpm;
+} cw_plaintext_config_t;
+
+typedef struct {
+    uint16_t target_chars;
+    uint16_t copy_chars;
+    uint16_t errors;
+    uint16_t accuracy_tenths;
+    uint32_t attempts;
+    uint16_t best_accuracy_tenths;
+    uint16_t last_accuracy_tenths;
+} cw_plaintext_result_t;
+
+typedef enum {
+    CW_PLAINTEXT_STATE_IDLE = 0,
+    CW_PLAINTEXT_STATE_READY,
+    CW_PLAINTEXT_STATE_COPYING,
+    CW_PLAINTEXT_STATE_RESULT,
+} cw_plaintext_state_t;
+
+typedef struct {
+    cw_plaintext_state_t state;
+    cw_plaintext_config_t config;
+    cw_plaintext_result_t result;
+    const char *title;
+    const char *source;
+    const char *target_text;
+    const char *copy_text;
+    uint16_t target_len;
+    uint16_t copy_len;
+} cw_plaintext_view_t;
+
+const cw_plaintext_config_t *cw_trainer_plaintext_get_config(void);
+void cw_trainer_plaintext_set_config(const cw_plaintext_config_t *config);
+void cw_trainer_plaintext_start(void);
+void cw_trainer_plaintext_abort(void);
+bool cw_trainer_plaintext_append_char(char ch);
+void cw_trainer_plaintext_backspace(void);
+const cw_plaintext_result_t *cw_trainer_plaintext_submit(void);
+const cw_plaintext_view_t *cw_trainer_plaintext_get_view(void);
+void cw_trainer_plaintext_load_persisted(const cw_plaintext_config_t *config,
+                                         const cw_plaintext_result_t *result);
+
 const char *cw_trainer_get_target_text(void);
 const char *cw_trainer_get_copy_text(void);
 char cw_trainer_get_last_char(void);

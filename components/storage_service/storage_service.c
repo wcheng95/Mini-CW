@@ -101,3 +101,25 @@ bool storage_callsign_save_result(const cw_callsign_result_t *result)
     ESP_LOGI(TAG, "callsign result save skipped: persistence disabled");
     return false;
 }
+
+bool storage_plaintext_load(cw_plaintext_config_t *config, cw_plaintext_result_t *result)
+{
+    (void)config;
+    (void)result;
+    ESP_LOGI(TAG, "plaintext load skipped: persistence disabled");
+    return false;
+}
+
+bool storage_plaintext_save_config(const cw_plaintext_config_t *config)
+{
+    (void)config;
+    ESP_LOGI(TAG, "plaintext config save skipped: persistence disabled");
+    return false;
+}
+
+bool storage_plaintext_save_result(const cw_plaintext_result_t *result)
+{
+    (void)result;
+    ESP_LOGI(TAG, "plaintext result save skipped: persistence disabled");
+    return false;
+}
