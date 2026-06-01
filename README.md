@@ -1,280 +1,188 @@
 # Make an Adapter
 
-* KeyIn: G13-Tip, G15-Ring — to paddle
-* KeyOut: G3-Tip, G6-Ring — to radio
-* Debug: G4-TX, G5-RX — not required for normal use
+* KeyIn: G13-Tip, G15-Ring - to paddle
+* KeyOut: G3-Tip, G6-Ring - to radio
+* Debug: G4-TX, G5-RX - not required for normal use
 
 ![Adaptor](mini-cw_adaptor.jpeg)
 
 # Mini-CW User Manual
 
-Mini-CW is a CW/Morse practice and keyer project for the M5 Cardputer ADV. This manual describes the current early development version.
+Mini-CW is a portable CW/Morse keyer and trainer for the M5 Cardputer ADV. The
+current firmware has a working keyer plus LCWO-inspired trainer modes for
+Lessons, Words, Callsigns, and Plain Text.
 
----
+## Screen Layout
 
-## 1. Screen Layout
-
-The screen uses a compact text layout.
+The display is a fixed 240 x 135 text UI:
 
 ```text
-Top bar
+Top row: current mode
 Green separator
-Line 1
-Line 2
-Line 3
-Line 4
-Line 5
-Bottom bar
+6 content rows, 20 characters each
 ```
 
-Current layout:
+The last content row is often used as a compact status or command hint.
+
+## Main Controls
 
 ```text
-Keyer         700 40
---------------------
-
-
-
-
-
-Paddle   Paddle   20
+Opt       open/close mode select
+Ctrl      open/close settings for the current mode
+Enter     start or submit in trainer modes
+Backspace edit typed copy
+`         abort current trainer run, or stop playback/keyer activity
 ```
 
----
+Settings screens use numbered rows. Press the row number to edit a value, type
+digits or use `,` and `/` to decrease/increase, then press Enter to apply.
+Backtick cancels an edit.
 
-## 2. Top Bar
+## Modes
 
-Top bar format:
+Mode select currently shows:
 
 ```text
-<mode:13> <tone:3> <vol:2>
+1 Keyer
+2 Lessons
+3 Words
+4 Calls
+5 Plain
+6 System
 ```
 
-Example:
+### Keyer
+
+Keyer mode starts on boot. Paddle and straight-key input are handled by
+`keyer_service`. Keyboard letters and digits are sent as CW through the trainer
+helper path.
+
+Keyer shortcuts:
 
 ```text
-Keyer         700 40
++ or =    raise keyer WPM
+-         lower keyer WPM
+]         raise sidetone pitch
+[         lower sidetone pitch
 ```
 
-Meaning:
+### Lessons
+
+Lessons mode is Koch-style receive practice. It generates random copy from the
+active lesson character set, sends it at the configured code/effective speed,
+and scores typed copy when submitted.
+
+Settings:
 
 ```text
-Keyer = current mode
-700   = sidetone frequency in Hz
-40    = volume
+1 Lesson      1..40
+2 Duration    1..5 minutes
+3 Code WPM    5..40
+4 Eff WPM     5..40, clamped to Code WPM
+5 Group       Rand, or 2..7 characters
 ```
 
-Tone and volume are global audio settings.
+### Words
 
----
+Words mode runs 25-word adaptive attempts from a built-in English word bank.
+Correct answers raise WPM, wrong answers lower WPM, and the result tracks score,
+max WPM, best score, and best max WPM.
 
-## 3. Middle Lines
-
-The five middle lines are reserved for mode display, menus, or future decoded CW text.
-
-For now, in Keyer mode, these lines are kept blank.
-
-CW decoder display will be added later.
-
----
-
-## 4. Bottom Bar
-
-Bottom bar format:
+Controls:
 
 ```text
-<KeyIn:8> <KeyOut:8> <KeyIn WPM:2>
+Enter     start/check answer
+.         replay current word
+Backspace edit answer
+`         abort
 ```
 
-Example:
+Settings:
 
 ```text
-Paddle   Paddle   20
+1 Speed      5..40
+2 MinChar    5..40
+3 Lesson     9..40
+4 MaxLen     2..15
 ```
 
-Meaning:
+### Calls
+
+Calls mode runs 25-callsign adaptive attempts from a prototype built-in bank.
+It accepts letters, digits, and `/`. Correct answers raise WPM up to MaxWPM;
+wrong answers lower WPM.
+
+Controls:
 
 ```text
-KeyIn     = input mode
-KeyOut    = output mode
-KeyIn WPM = paddle/input timing speed
+Enter      start/check answer
+. or Space replay current callsign
+Backspace  edit answer
+`          abort
 ```
 
-The bottom bar is drawn in cyan.
-
----
-
-## 5. Modes
-
-Current planned modes:
+Settings:
 
 ```text
-Practice
-Keyer
-Lessons
+1 Speed      5..40
+2 MinChar    5..40
+3 MaxWPM     5..40
 ```
 
-For now, Keyer mode is the main working mode.
+### Plain
 
----
+Plain mode sends one randomly selected built-in plain-text message, accepts
+typed copy, and scores the result with Levenshtein accuracy after whitespace
+normalization.
 
-## 6. Global Setting/Menu
+Unlike Words and Calls, period is typed punctuation in Plain mode.
 
-Press **Ctrl** to enter or exit the global setting/menu.
-
-The global setting/menu uses the same style as Mini-FT8:
+Settings:
 
 ```text
-1-5       select or edit the visible item
-;         page up
-.         page down
-,         previous / decrease
-/         next / increase
-Ctrl      exit global setting/menu
+1 Code WPM   5..40
+2 Eff WPM    5..40, clamped to Code WPM
 ```
 
-### Global Menu Page 1
+### System
+
+System mode contains device-wide settings and actions.
 
 ```text
-1 Mode:Keyer
-2 Tone:700Hz
-3 Volume:40
-4 KeyIn:Paddle
-5 KeyIn WPM:20
+1 Volume
+2 KeyIn
+3 KeyIn WPM
+4 Sleep/Batt
+5 Date
+6 Time
 ```
 
-### Global Menu Page 2
+`KeyIn` cycles through the available input modes, including paddle,
+reverse-paddle, straight-key, and mono straight-key modes.
+
+## KeyIn Modes
 
 ```text
-1 KeyOut:Paddle
-2 KeyOut WPM:20
-3 Sleep/Batt 90%
-4 Date
-5 Time
+Paddle    G13/Tip = dit, G15/Ring = dah
+PaddleR   G13/Tip = dah, G15/Ring = dit
+SK        G13/Tip = straight key input
+SK-Mono   G13/Tip or G15/Ring = straight key input
 ```
 
----
+## Current Data And Persistence
 
-## 7. Local Mode Setting/Menu
+Lessons, Words, Calls, and Plain currently use firmware-generated or
+firmware-built-in practice data. The storage API has load/save stubs for
+trainer config and results, but real FATFS-backed persistence is not enabled
+yet.
 
-Press **Fn** to enter or exit the local setting/menu for the current mode.
-
-This is separate from the global menu.
-
-For now:
-
-```text
-Practice mode: no local settings
-Keyer mode: local settings may be added later
-Lessons mode: local settings may be added later
-```
-
----
-
-## 8. KeyIn Modes
-
-Current KeyIn options:
+## Current Limitations
 
 ```text
-Paddle
-PaddleR
-SK
-SK-Mono
-```
-
-### Paddle
-
-```text
-G13 / Tip  = dit
-G15 / Ring = dah
-```
-
-### PaddleR
-
-Reverse paddle mode:
-
-```text
-G13 / Tip  = dah
-G15 / Ring = dit
-```
-
-### SK
-
-Straight-key mode.
-
-```text
-G13 / Tip = straight key input
-```
-
-When G13 is held down, the sidetone stays on.
-
-### SK-Mono
-
-Mono straight-key mode.
-
-```text
-G13 or G15 = straight key input
-```
-
-Either input can key the sidetone.
-
----
-
-## 9. Iambic-B Paddle Behavior
-
-The current Keyer mode implements Iambic-B behavior for paddle input.
-
-Use KeyIn WPM to control timing.
-
-Morse timing:
-
-```text
-dit length = 1200 / WPM milliseconds
-dah length = 3 * dit length
-gap        = 1 * dit length
-```
-
-Example at 20 WPM:
-
-```text
-dit = 60 ms
-dah = 180 ms
-gap = 60 ms
-```
-
----
-
-## 10. Adjusting Global Settings
-
-Enter the global menu with **Ctrl**.
-
-Example:
-
-### Change Tone
-
-```text
-Ctrl
-go to Page 1
-select item 2 Tone
-use , or / to decrease/increase
-Ctrl to exit
-```
-
----
-
-## 11. Current Limitations
-
-This is an early development version.
-
-Current limitations:
-
-```text
-No CW decoder display yet
-No text buffer display yet
-No FATFS setting.txt persistence yet
+No file-backed word/callsign/plaintext lists yet
+No user-editable setting.txt persistence yet
 No USB flash-drive mode yet
-No QSO/logging features yet
-No full user manual for all future modes yet
+No CW decoder display yet
+No QSO/logging/statistics mode yet
+Callsign bank is prototype data and will be replaced or generated later
 ```
-
----
