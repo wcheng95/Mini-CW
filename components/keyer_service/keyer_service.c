@@ -8,6 +8,8 @@
 
 #include "keyer_service.h"
 
+#include "keyer_decoder.h"
+
 #include "audio_service.h"
 #include "driver/gpio.h"
 #include "esp_err.h"
@@ -27,6 +29,7 @@ static const char *TAG = "keyer_service";
 #define KEYER_GPIO_TIP GPIO_NUM_13
 #define KEYER_GPIO_RING GPIO_NUM_15
 #define KEYER_GPIO_ACTIVE_LEVEL 0
+#define KEYER_EVENT_RING_CAP 8U
 
 typedef enum {
     KEYER_PADDLE_IDLE = 0,
@@ -45,6 +48,10 @@ static const keyer_event_t KEYER_NO_EVENT = {
     .duration_ms = 0,
 };
 
+static keyer_event_t s_event_ring[KEYER_EVENT_RING_CAP];
+static uint8_t s_event_head;
+static uint8_t s_event_tail;
+static uint8_t s_event_count;
 static keyer_io_mode_t s_key_in_mode = KEYER_IO_PADDLE;
 static keyer_io_mode_t s_key_out_mode = KEYER_IO_PADDLE;
 static uint8_t s_key_in_wpm = KEYER_DEFAULT_TX_WPM;
@@ -59,6 +66,10 @@ static bool s_dit_memory;
 static bool s_dah_memory;
 static bool s_squeeze_latched;
 static bool s_mode_b_extra_pending;
+static keyer_decoder_t s_paddle_decoder;
+static TickType_t s_decoder_last_element_end_tick;
+static bool s_decoder_char_finalized;
+static bool s_decoder_space_emitted;
 
 static uint16_t keyer_clamp_tx_wpm(uint16_t wpm)
 {
@@ -131,6 +142,43 @@ static bool keyer_tick_reached(TickType_t now, TickType_t target)
     return (int32_t)(now - target) >= 0;
 }
 
+static void keyer_clear_events(void)
+{
+    s_event_head = 0U;
+    s_event_tail = 0U;
+    s_event_count = 0U;
+}
+
+static void keyer_push_event(keyer_event_type_t type, char decoded_char, uint16_t duration_ms)
+{
+    keyer_event_t event = {
+        .type = type,
+        .decoded_char = decoded_char,
+        .duration_ms = duration_ms,
+    };
+
+    if (type == KEYER_EVENT_NONE) {
+        return;
+    }
+
+    if (s_event_count >= KEYER_EVENT_RING_CAP) {
+        ESP_LOGW(TAG, "keyer event ring full; dropping event type=%d", type);
+        return;
+    }
+
+    s_event_ring[s_event_tail] = event;
+    s_event_tail = (uint8_t)((s_event_tail + 1U) % KEYER_EVENT_RING_CAP);
+    ++s_event_count;
+}
+
+static void keyer_reset_paddle_decoder_state(void)
+{
+    keyer_decoder_reset(&s_paddle_decoder);
+    s_decoder_last_element_end_tick = 0;
+    s_decoder_char_finalized = false;
+    s_decoder_space_emitted = false;
+}
+
 static keyer_element_t keyer_opposite_element(keyer_element_t element)
 {
     switch (element) {
@@ -194,6 +242,8 @@ static void keyer_reset_input_state(void)
 {
     keyer_stop_straight_tone();
     keyer_clear_iambic_state();
+    keyer_reset_paddle_decoder_state();
+    keyer_clear_events();
 }
 
 static void keyer_configure_gpio(void)
@@ -240,6 +290,70 @@ static void keyer_start_paddle_element(keyer_element_t element)
     s_paddle_state = KEYER_PADDLE_WAIT_GAP;
     s_paddle_element_end_tick = now + keyer_ms_to_delay_ticks(tone_ms);
     s_paddle_ready_tick = s_paddle_element_end_tick + keyer_ms_to_delay_ticks(unit_ms);
+
+    keyer_decoder_append(&s_paddle_decoder, !dit);
+    s_decoder_last_element_end_tick = s_paddle_element_end_tick;
+    s_decoder_char_finalized = false;
+    s_decoder_space_emitted = false;
+}
+
+static void keyer_emit_decoder_result(keyer_decoder_result_t result)
+{
+    switch (result.type) {
+    case KEYER_DECODER_RESULT_CHAR:
+        keyer_push_event(KEYER_EVENT_CHAR_COMPLETE, result.ch, 0U);
+        s_decoder_char_finalized = true;
+        s_decoder_space_emitted = false;
+        break;
+    case KEYER_DECODER_RESULT_BACKSPACE:
+        keyer_push_event(KEYER_EVENT_BACKSPACE, '\b', 0U);
+        s_decoder_char_finalized = false;
+        s_decoder_space_emitted = true;
+        break;
+    case KEYER_DECODER_RESULT_SPACE:
+        keyer_push_event(KEYER_EVENT_WORD_SPACE, ' ', 0U);
+        s_decoder_char_finalized = false;
+        s_decoder_space_emitted = true;
+        break;
+    case KEYER_DECODER_RESULT_INVALID:
+        ESP_LOGW(TAG, "invalid paddle Morse pattern ignored");
+        s_decoder_char_finalized = false;
+        s_decoder_space_emitted = true;
+        break;
+    case KEYER_DECODER_RESULT_NONE:
+    default:
+        break;
+    }
+}
+
+static void keyer_update_paddle_decode_gaps(TickType_t now)
+{
+    uint16_t unit_ms = keyer_dit_ms();
+    TickType_t char_due;
+    TickType_t word_due;
+
+    if (s_decoder_last_element_end_tick == 0) {
+        return;
+    }
+
+    if (keyer_decoder_has_pending(&s_paddle_decoder)) {
+        char_due = s_decoder_last_element_end_tick + keyer_ms_to_delay_ticks(3U * unit_ms);
+        if (!keyer_tick_reached(now, char_due)) {
+            return;
+        }
+
+        keyer_emit_decoder_result(keyer_decoder_finalize(&s_paddle_decoder));
+    }
+
+    if (!s_decoder_char_finalized || s_decoder_space_emitted) {
+        return;
+    }
+
+    word_due = s_decoder_last_element_end_tick + keyer_ms_to_delay_ticks(7U * unit_ms);
+    if (keyer_tick_reached(now, word_due)) {
+        keyer_push_event(KEYER_EVENT_WORD_SPACE, ' ', 0U);
+        s_decoder_space_emitted = true;
+    }
 }
 
 static void keyer_update_iambic_memory(bool dit_pressed,
@@ -329,6 +443,8 @@ static void keyer_update_paddle_mode(keyer_io_mode_t mode, bool tip_pressed, boo
 
         s_paddle_state = KEYER_PADDLE_IDLE;
     }
+
+    keyer_update_paddle_decode_gaps(now);
 
     next = keyer_choose_next_iambic_element(dit_pressed, dah_pressed);
     if (next != KEYER_ELEMENT_NONE) {
@@ -483,10 +599,6 @@ void keyer_service_set_input_mode(keyer_input_mode_t mode)
 
 uint16_t keyer_service_get_tx_wpm(void)
 {
-    /*
-     * TX speed belongs to keyer_service. Step 3 exposes adjustment controls,
-     * but paddle timing and full keyer logic still come later.
-     */
     return s_key_in_wpm;
 }
 
@@ -526,5 +638,14 @@ void keyer_service_update(void)
 
 keyer_event_t keyer_service_poll_event(void)
 {
-    return KEYER_NO_EVENT;
+    keyer_event_t event;
+
+    if (s_event_count == 0U) {
+        return KEYER_NO_EVENT;
+    }
+
+    event = s_event_ring[s_event_head];
+    s_event_head = (uint8_t)((s_event_head + 1U) % KEYER_EVENT_RING_CAP);
+    --s_event_count;
+    return event;
 }

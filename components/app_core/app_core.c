@@ -492,6 +492,100 @@ static void app_core_handle_char_input(char key)
     ui_service_refresh();
 }
 
+static bool app_core_append_training_copy_char(char key)
+{
+    if (s_app.mode == APP_MODE_PLAINTEXT) {
+        return cw_trainer_plaintext_append_char(key);
+    }
+    if (s_app.mode == APP_MODE_LESSONS) {
+        return cw_trainer_lesson_append_char(key);
+    }
+    if (s_app.mode == APP_MODE_WORDS) {
+        return cw_trainer_word_append_char(key);
+    }
+    if (s_app.mode == APP_MODE_CALLSIGNS) {
+        return cw_trainer_callsign_append_char(key);
+    }
+
+    return false;
+}
+
+static bool app_core_backspace_training_copy(void)
+{
+    if (s_app.mode == APP_MODE_PLAINTEXT) {
+        const cw_plaintext_view_t *view = cw_trainer_plaintext_get_view();
+        if (view != NULL && view->state == CW_PLAINTEXT_STATE_COPYING && view->copy_len > 0U) {
+            cw_trainer_plaintext_backspace();
+            return true;
+        }
+    } else if (s_app.mode == APP_MODE_LESSONS) {
+        const cw_lesson_view_t *view = cw_trainer_lesson_get_view();
+        if (view != NULL && view->state == CW_LESSON_STATE_COPYING && view->copy_len > 0U) {
+            cw_trainer_lesson_backspace();
+            return true;
+        }
+    } else if (s_app.mode == APP_MODE_WORDS) {
+        const cw_word_view_t *view = cw_trainer_word_get_view();
+        if (view != NULL && view->state == CW_WORD_STATE_COPYING && view->copy_len > 0U) {
+            cw_trainer_word_backspace();
+            return true;
+        }
+    } else if (s_app.mode == APP_MODE_CALLSIGNS) {
+        const cw_callsign_view_t *view = cw_trainer_callsign_get_view();
+        if (view != NULL && view->state == CW_CALLSIGN_STATE_COPYING && view->copy_len > 0U) {
+            cw_trainer_callsign_backspace();
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void app_core_handle_keyer_event(const keyer_event_t *event)
+{
+    bool handled = false;
+
+    if (event == NULL || event->type == KEYER_EVENT_NONE) {
+        return;
+    }
+
+    /* keyer_service owns paddle decoding; app_core only routes decoded intent. */
+    switch (event->type) {
+    case KEYER_EVENT_CHAR_COMPLETE:
+        handled = app_core_append_training_copy_char(event->decoded_char);
+        break;
+    case KEYER_EVENT_WORD_SPACE:
+        handled = app_core_append_training_copy_char(' ');
+        break;
+    case KEYER_EVENT_BACKSPACE:
+        handled = app_core_backspace_training_copy();
+        break;
+    case KEYER_EVENT_DIT:
+    case KEYER_EVENT_DAH:
+    case KEYER_EVENT_TIMING_WARNING:
+    case KEYER_EVENT_TIMING_ERROR:
+    case KEYER_EVENT_NONE:
+    default:
+        break;
+    }
+
+    if (handled) {
+        ui_service_refresh();
+    }
+}
+
+static void app_core_drain_keyer_events(void)
+{
+    for (;;) {
+        keyer_event_t event = keyer_service_poll_event();
+        if (event.type == KEYER_EVENT_NONE) {
+            return;
+        }
+
+        app_core_handle_keyer_event(&event);
+    }
+}
+
 static void app_core_handle_ui_event(ui_input_event_t event)
 {
     if (event.type == UI_INPUT_EVENT_NONE) {
@@ -658,6 +752,7 @@ void app_core_run(void)
 
     for (;;) {
         keyer_service_update();
+        app_core_drain_keyer_events();
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);
         app_core_maybe_save_dirty_config();
