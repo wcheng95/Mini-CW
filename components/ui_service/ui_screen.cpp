@@ -17,6 +17,17 @@
 static const char *TAG = "ui_screen";
 
 static bool s_initialized = false;
+static bool s_have_last_screen = false;
+static mini_cw_screen_t s_last_screen;
+
+static const int UI_LINE_Y[UI_MODE_LINES] = {
+    UI_LINE1_Y,
+    UI_LINE2_Y,
+    UI_LINE3_Y,
+    UI_LINE4_Y,
+    UI_LINE5_Y,
+    UI_LINE6_Y,
+};
 
 static void ui_screen_copy_visible(char dest[UI_COLS + 1], const char *src)
 {
@@ -72,6 +83,20 @@ static void ui_screen_format_top_row(char row[UI_COLS + 1], const mini_cw_screen
     }
 }
 
+static ui_cardputer_port_color_t ui_screen_map_color(mini_cw_screen_color_t color)
+{
+    switch (color) {
+    case MINI_CW_SCREEN_COLOR_GREEN:
+        return UI_CARDPUTER_PORT_COLOR_GREEN;
+    case MINI_CW_SCREEN_COLOR_CYAN:
+        return UI_CARDPUTER_PORT_COLOR_CYAN;
+    case MINI_CW_SCREEN_COLOR_WHITE:
+    case MINI_CW_SCREEN_COLOR_DEFAULT:
+    default:
+        return UI_CARDPUTER_PORT_COLOR_WHITE;
+    }
+}
+
 static void ui_screen_draw_text_row(int y,
                                     int height,
                                     const char *text,
@@ -83,6 +108,17 @@ static void ui_screen_draw_text_row(int y,
     ui_screen_copy_visible(clipped, text);
     ui_cardputer_port_display_fill_rect(0, y, UI_W, height, bg);
     ui_cardputer_port_display_print_text(0, y + 1, clipped, fg, bg);
+}
+
+static bool ui_screen_line_changed(const mini_cw_screen_t *screen,
+                                   const mini_cw_screen_t *last_screen,
+                                   int line)
+{
+    if (screen->line_color[line] != last_screen->line_color[line]) {
+        return true;
+    }
+
+    return std::strncmp(screen->line[line], last_screen->line[line], UI_COLS) != 0;
 }
 
 void ui_screen_init(void)
@@ -116,54 +152,46 @@ void ui_screen_render(const mini_cw_screen_t *screen)
     }
 
     char top[UI_COLS + 1];
+    char last_top[UI_COLS + 1];
 
     ui_screen_format_top_row(top, screen);
 
     ui_cardputer_port_display_begin_frame();
-    ui_cardputer_port_display_fill_screen(UI_CARDPUTER_PORT_COLOR_BLACK);
 
-    ui_screen_draw_text_row(UI_TOP_Y,
-                            UI_TOP_H,
-                            top,
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
-    ui_cardputer_port_display_fill_rect(0,
-                                        UI_SEP_Y,
-                                        UI_W,
-                                        UI_SEP_H,
-                                        UI_CARDPUTER_PORT_COLOR_GREEN);
+    if (!s_have_last_screen) {
+        ui_cardputer_port_display_fill_screen(UI_CARDPUTER_PORT_COLOR_BLACK);
+        ui_cardputer_port_display_fill_rect(0,
+                                            UI_SEP_Y,
+                                            UI_W,
+                                            UI_SEP_H,
+                                            UI_CARDPUTER_PORT_COLOR_GREEN);
+    }
 
-    ui_screen_draw_text_row(UI_LINE1_Y,
-                            UI_ROW_H,
-                            screen->line[0],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
-    ui_screen_draw_text_row(UI_LINE2_Y,
-                            UI_ROW_H,
-                            screen->line[1],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
-    ui_screen_draw_text_row(UI_LINE3_Y,
-                            UI_ROW_H,
-                            screen->line[2],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
-    ui_screen_draw_text_row(UI_LINE4_Y,
-                            UI_ROW_H,
-                            screen->line[3],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
-    ui_screen_draw_text_row(UI_LINE5_Y,
-                            UI_ROW_H,
-                            screen->line[4],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
+    if (!s_have_last_screen) {
+        last_top[0] = '\0';
+    } else {
+        ui_screen_format_top_row(last_top, &s_last_screen);
+    }
 
-    ui_screen_draw_text_row(UI_LINE6_Y,
-                            UI_ROW_H,
-                            screen->line[5],
-                            UI_CARDPUTER_PORT_COLOR_WHITE,
-                            UI_CARDPUTER_PORT_COLOR_BLACK);
+    if (!s_have_last_screen || std::strcmp(top, last_top) != 0) {
+        ui_screen_draw_text_row(UI_TOP_Y,
+                                UI_TOP_H,
+                                top,
+                                UI_CARDPUTER_PORT_COLOR_WHITE,
+                                UI_CARDPUTER_PORT_COLOR_BLACK);
+    }
+
+    for (int line = 0; line < UI_MODE_LINES; ++line) {
+        if (!s_have_last_screen || ui_screen_line_changed(screen, &s_last_screen, line)) {
+            ui_screen_draw_text_row(UI_LINE_Y[line],
+                                    UI_ROW_H,
+                                    screen->line[line],
+                                    ui_screen_map_color(screen->line_color[line]),
+                                    UI_CARDPUTER_PORT_COLOR_BLACK);
+        }
+    }
 
     ui_cardputer_port_display_end_frame();
+    s_last_screen = *screen;
+    s_have_last_screen = true;
 }

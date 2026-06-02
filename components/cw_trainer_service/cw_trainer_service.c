@@ -209,27 +209,6 @@ bool cw_trainer_handle_char_input(char ch)
     return true;
 }
 
-void cw_trainer_adjust_wpm(int delta)
-{
-    int next = (int)audio_service_get_cw_wpm() + delta;
-    if (next < 0) {
-        next = 0;
-    }
-
-    audio_service_set_cw_wpm((uint8_t)next);
-    s_status = "WPM updated";
-}
-
-void cw_trainer_adjust_pitch(int delta_hz)
-{
-    int next = (int)audio_service_get_tone_hz() + delta_hz;
-    if (next < 0) {
-        next = 0;
-    }
-
-    audio_service_set_tone_hz((uint16_t)next);
-    s_status = "Pitch updated";
-}
 const cw_lesson_config_t *cw_trainer_lesson_get_config(void)
 {
     return cw_lesson_mode_get_config();

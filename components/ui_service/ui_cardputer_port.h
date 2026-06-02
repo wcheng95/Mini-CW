@@ -27,6 +27,12 @@ typedef enum {
 typedef struct {
     ui_cardputer_port_event_type_t type;
     char ch;
+    bool fn;
+    bool shift;
+    bool ctrl;
+    bool opt;
+    bool alt;
+    bool caps_lock;
 } ui_cardputer_port_event_t;
 
 typedef enum {

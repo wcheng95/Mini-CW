@@ -18,6 +18,12 @@ static const char *TAG = "ui_cardputer_port";
 
 static bool s_initialized = false;
 static char s_last_reported_key = '\0';
+static bool s_last_reported_key_fn = false;
+static bool s_last_reported_key_shift = false;
+static bool s_last_reported_key_ctrl = false;
+static bool s_last_reported_key_opt = false;
+static bool s_last_reported_key_alt = false;
+static bool s_last_reported_key_caps_lock = false;
 static bool s_last_reported_fn = false;
 static bool s_last_reported_ctrl = false;
 static bool s_last_reported_opt = false;
@@ -63,6 +69,12 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     out_event->type = UI_CARDPUTER_PORT_EVENT_NONE;
     out_event->ch = '\0';
+    out_event->fn = false;
+    out_event->shift = false;
+    out_event->ctrl = false;
+    out_event->opt = false;
+    out_event->alt = false;
+    out_event->caps_lock = false;
 
     if (!s_initialized) {
         return false;
@@ -72,6 +84,13 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     auto &keys = M5Cardputer.Keyboard.keysState();
     char ch = '\0';
+
+    out_event->fn = keys.fn;
+    out_event->shift = keys.shift;
+    out_event->ctrl = keys.ctrl;
+    out_event->opt = keys.opt;
+    out_event->alt = keys.alt;
+    out_event->caps_lock = M5Cardputer.Keyboard.capslocked();
 
     if (!keys.word.empty()) {
         ch = keys.word.front();
@@ -88,11 +107,20 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
         s_last_reported_ctrl = false;
         s_last_reported_opt = false;
 
-        if (ch == s_last_reported_key) {
+        if (ch == s_last_reported_key && keys.fn == s_last_reported_key_fn &&
+            keys.shift == s_last_reported_key_shift && keys.ctrl == s_last_reported_key_ctrl &&
+            keys.opt == s_last_reported_key_opt && keys.alt == s_last_reported_key_alt &&
+            out_event->caps_lock == s_last_reported_key_caps_lock) {
             return false;
         }
 
         s_last_reported_key = ch;
+        s_last_reported_key_fn = keys.fn;
+        s_last_reported_key_shift = keys.shift;
+        s_last_reported_key_ctrl = keys.ctrl;
+        s_last_reported_key_opt = keys.opt;
+        s_last_reported_key_alt = keys.alt;
+        s_last_reported_key_caps_lock = out_event->caps_lock;
         out_event->type = UI_CARDPUTER_PORT_EVENT_CHAR;
         out_event->ch = ch;
         ESP_LOGI(TAG, "keyboard char: '%c'", ch);

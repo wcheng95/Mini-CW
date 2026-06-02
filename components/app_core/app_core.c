@@ -264,6 +264,18 @@ static void app_core_handle_volume_changed(const ui_input_event_t *event)
     ui_service_refresh();
 }
 
+static void app_core_handle_tone_changed(const ui_input_event_t *event)
+{
+    if (event == NULL) {
+        return;
+    }
+
+    audio_service_set_tone_hz((uint16_t)event->value);
+    audio_service_play_feedback_beep();
+    app_core_mark_system_config_dirty();
+    ui_service_refresh();
+}
+
 static void app_core_handle_key_in_wpm_changed(const ui_input_event_t *event)
 {
     if (event == NULL) {
@@ -326,6 +338,7 @@ static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
             break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
+        case UI_SETTING_TONE_HZ:
         case UI_SETTING_KEY_IN_WPM:
         case UI_SETTING_KEY_IN_MODE:
         case UI_SETTING_WORD_SPEED:
@@ -369,6 +382,7 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
             break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
+        case UI_SETTING_TONE_HZ:
         case UI_SETTING_KEY_IN_WPM:
         case UI_SETTING_KEY_IN_MODE:
         case UI_SETTING_LESSON:
@@ -410,6 +424,7 @@ static void app_core_handle_callsign_config_changed(const ui_input_event_t *even
             break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
+        case UI_SETTING_TONE_HZ:
         case UI_SETTING_KEY_IN_WPM:
         case UI_SETTING_KEY_IN_MODE:
         case UI_SETTING_LESSON:
@@ -449,6 +464,7 @@ static void app_core_handle_plaintext_config_changed(const ui_input_event_t *eve
             break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
+        case UI_SETTING_TONE_HZ:
         case UI_SETTING_KEY_IN_WPM:
         case UI_SETTING_KEY_IN_MODE:
         case UI_SETTING_LESSON:
@@ -541,6 +557,34 @@ static bool app_core_backspace_training_copy(void)
     return false;
 }
 
+static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
+{
+    if (s_app.mode != APP_MODE_KEYER || event == NULL) {
+        return false;
+    }
+
+    switch (event->type) {
+    case KEYER_EVENT_CHAR_COMPLETE:
+        ui_service_keyer_append_decoded_char(event->decoded_char);
+        return true;
+    case KEYER_EVENT_WORD_SPACE:
+        ui_service_keyer_append_decoded_char(' ');
+        return true;
+    case KEYER_EVENT_BACKSPACE:
+        ui_service_keyer_backspace_decoded();
+        return true;
+    case KEYER_EVENT_DIT:
+    case KEYER_EVENT_DAH:
+    case KEYER_EVENT_TIMING_WARNING:
+    case KEYER_EVENT_TIMING_ERROR:
+    case KEYER_EVENT_NONE:
+    default:
+        break;
+    }
+
+    return false;
+}
+
 static void app_core_handle_keyer_event(const keyer_event_t *event)
 {
     bool handled = false;
@@ -550,23 +594,27 @@ static void app_core_handle_keyer_event(const keyer_event_t *event)
     }
 
     /* keyer_service owns paddle decoding; app_core only routes decoded intent. */
-    switch (event->type) {
-    case KEYER_EVENT_CHAR_COMPLETE:
-        handled = app_core_append_training_copy_char(event->decoded_char);
-        break;
-    case KEYER_EVENT_WORD_SPACE:
-        handled = app_core_append_training_copy_char(' ');
-        break;
-    case KEYER_EVENT_BACKSPACE:
-        handled = app_core_backspace_training_copy();
-        break;
-    case KEYER_EVENT_DIT:
-    case KEYER_EVENT_DAH:
-    case KEYER_EVENT_TIMING_WARNING:
-    case KEYER_EVENT_TIMING_ERROR:
-    case KEYER_EVENT_NONE:
-    default:
-        break;
+    if (s_app.mode == APP_MODE_KEYER) {
+        handled = app_core_handle_keyer_mode_decoded_event(event);
+    } else {
+        switch (event->type) {
+        case KEYER_EVENT_CHAR_COMPLETE:
+            handled = app_core_append_training_copy_char(event->decoded_char);
+            break;
+        case KEYER_EVENT_WORD_SPACE:
+            handled = app_core_append_training_copy_char(' ');
+            break;
+        case KEYER_EVENT_BACKSPACE:
+            handled = app_core_backspace_training_copy();
+            break;
+        case KEYER_EVENT_DIT:
+        case KEYER_EVENT_DAH:
+        case KEYER_EVENT_TIMING_WARNING:
+        case KEYER_EVENT_TIMING_ERROR:
+        case KEYER_EVENT_NONE:
+        default:
+            break;
+        }
     }
 
     if (handled) {
@@ -627,6 +675,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
     case UI_INPUT_EVENT_VOLUME_CHANGED:
         app_core_handle_volume_changed(&event);
         break;
+    case UI_INPUT_EVENT_TONE_CHANGED:
+        app_core_handle_tone_changed(&event);
+        break;
     case UI_INPUT_EVENT_KEY_IN_WPM_CHANGED:
         app_core_handle_key_in_wpm_changed(&event);
         break;
@@ -685,24 +736,6 @@ static void app_core_handle_ui_event(ui_input_event_t event)
             cw_trainer_callsign_replay();
             ui_service_refresh();
         }
-        break;
-    case UI_INPUT_EVENT_WPM_UP:
-        cw_trainer_adjust_wpm(1);
-        ui_service_refresh();
-        break;
-    case UI_INPUT_EVENT_WPM_DOWN:
-        cw_trainer_adjust_wpm(-1);
-        ui_service_refresh();
-        break;
-    case UI_INPUT_EVENT_PITCH_UP:
-        cw_trainer_adjust_pitch(50);
-        app_core_mark_system_config_dirty();
-        ui_service_refresh();
-        break;
-    case UI_INPUT_EVENT_PITCH_DOWN:
-        cw_trainer_adjust_pitch(-50);
-        app_core_mark_system_config_dirty();
-        ui_service_refresh();
         break;
     case UI_INPUT_EVENT_NONE:
     case UI_INPUT_EVENT_CANCEL:

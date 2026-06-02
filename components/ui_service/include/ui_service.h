@@ -21,12 +21,9 @@ typedef enum {
     UI_INPUT_EVENT_SELECT,
     UI_INPUT_EVENT_CHAR_INPUT,
     UI_INPUT_EVENT_BACKSPACE,
-    UI_INPUT_EVENT_WPM_UP,
-    UI_INPUT_EVENT_WPM_DOWN,
-    UI_INPUT_EVENT_PITCH_UP,
-    UI_INPUT_EVENT_PITCH_DOWN,
     UI_INPUT_EVENT_MODE_CHANGED,
     UI_INPUT_EVENT_VOLUME_CHANGED,
+    UI_INPUT_EVENT_TONE_CHANGED,
     UI_INPUT_EVENT_KEY_IN_WPM_CHANGED,
     UI_INPUT_EVENT_KEY_IN_MODE_CHANGED,
     UI_INPUT_EVENT_LESSON_CONFIG_CHANGED,
@@ -41,6 +38,7 @@ typedef enum {
 typedef enum {
     UI_SETTING_NONE = 0,
     UI_SETTING_VOLUME,
+    UI_SETTING_TONE_HZ,
     UI_SETTING_KEY_IN_WPM,
     UI_SETTING_KEY_IN_MODE,
     UI_SETTING_LESSON,
@@ -84,6 +82,9 @@ ui_service_mode_t ui_service_get_mode(void);
 void ui_service_set_mode(ui_service_mode_t mode);
 void ui_service_prepare_for_sleep(void);
 ui_input_event_t ui_service_poll_input(void);
+void ui_service_keyer_append_decoded_char(char ch);
+void ui_service_keyer_backspace_decoded(void);
+void ui_service_keyer_clear_decoded(void);
 
 #ifdef __cplusplus
 }

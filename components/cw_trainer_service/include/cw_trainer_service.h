@@ -26,8 +26,6 @@ void cw_trainer_start_tone_test(void);
 void cw_trainer_stop(void);
 void cw_trainer_handle_keyer_event(const keyer_event_t *event);
 bool cw_trainer_handle_char_input(char ch);
-void cw_trainer_adjust_wpm(int delta);
-void cw_trainer_adjust_pitch(int delta_hz);
 
 typedef struct {
     uint8_t lesson;

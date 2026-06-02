@@ -40,6 +40,7 @@ typedef enum {
 typedef enum {
     UI_EDIT_NONE = 0,
     UI_EDIT_VOLUME,
+    UI_EDIT_TONE_HZ,
     UI_EDIT_KEY_IN_WPM,
     UI_EDIT_LESSON,
     UI_EDIT_LESSON_DURATION,
@@ -90,9 +91,20 @@ static bool s_cardputer_ready;
 #define UI_VOLUME_MIN 0
 #define UI_VOLUME_MAX 99
 #define UI_VOLUME_STEP 5
+#define UI_TONE_HZ_MIN 300
+#define UI_TONE_HZ_MAX 999
+#define UI_TONE_HZ_STEP 50
 #define UI_WPM_MIN 5
 #define UI_WPM_MAX 60
 #define UI_WPM_STEP 1
+#define UI_KEYER_VISIBLE_LINES 5U
+#define UI_KEYER_HISTORY_LINES 64U
+#define UI_KEYER_HISTORY_CAPACITY (UI_KEYER_HISTORY_LINES * UI_COLS)
+
+static char s_keyer_history[UI_KEYER_HISTORY_CAPACITY + 1U];
+static uint16_t s_keyer_history_len;
+static uint16_t s_keyer_history_scroll_top;
+static bool s_keyer_history_follow_tail = true;
 
 static void ui_service_render_current_view(void);
 static void ui_service_set_event(ui_input_event_t *out_event,
@@ -186,6 +198,133 @@ static void ui_service_prepare_screen(mini_cw_screen_t *screen)
     ui_service_set_text(screen->mode, sizeof(screen->mode), ui_service_mode_name(s_ui.mode));
 }
 
+static uint16_t ui_service_keyer_history_line_count(void)
+{
+    if (s_keyer_history_len == 0U) {
+        return 1U;
+    }
+
+    return (uint16_t)((s_keyer_history_len + UI_COLS - 1U) / UI_COLS);
+}
+
+static uint16_t ui_service_keyer_history_max_scroll_top(void)
+{
+    uint16_t line_count = ui_service_keyer_history_line_count();
+
+    if (line_count <= UI_KEYER_VISIBLE_LINES) {
+        return 0U;
+    }
+
+    return (uint16_t)(line_count - UI_KEYER_VISIBLE_LINES);
+}
+
+static void ui_service_keyer_clamp_scroll(void)
+{
+    uint16_t max_scroll_top = ui_service_keyer_history_max_scroll_top();
+
+    if (s_keyer_history_scroll_top > max_scroll_top) {
+        s_keyer_history_scroll_top = max_scroll_top;
+    }
+}
+
+static void ui_service_keyer_follow_latest(void)
+{
+    s_keyer_history_scroll_top = ui_service_keyer_history_max_scroll_top();
+    s_keyer_history_follow_tail = true;
+}
+
+static void ui_service_keyer_scroll_decoded(int delta_lines)
+{
+    uint16_t max_scroll_top = ui_service_keyer_history_max_scroll_top();
+    int next = (int)s_keyer_history_scroll_top + delta_lines;
+
+    if (next < 0) {
+        next = 0;
+    }
+    if (next > (int)max_scroll_top) {
+        next = (int)max_scroll_top;
+    }
+
+    s_keyer_history_scroll_top = (uint16_t)next;
+    s_keyer_history_follow_tail = s_keyer_history_scroll_top >= max_scroll_top;
+}
+
+static void ui_service_keyer_render_history_line(char *dest,
+                                                 size_t dest_size,
+                                                 uint16_t line_index)
+{
+    uint16_t start = (uint16_t)(line_index * UI_COLS);
+    uint16_t count;
+
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (start >= s_keyer_history_len) {
+        return;
+    }
+
+    count = (uint16_t)(s_keyer_history_len - start);
+    if (count > UI_COLS) {
+        count = UI_COLS;
+    }
+    if (count + 1U > dest_size) {
+        count = (uint16_t)(dest_size - 1U);
+    }
+
+    memcpy(dest, &s_keyer_history[start], count);
+    dest[count] = '\0';
+}
+
+void ui_service_keyer_append_decoded_char(char ch)
+{
+    if (ch < 32 || ch > 126) {
+        return;
+    }
+
+    if (s_keyer_history_len >= UI_KEYER_HISTORY_CAPACITY) {
+        memmove(s_keyer_history,
+                s_keyer_history + UI_COLS,
+                UI_KEYER_HISTORY_CAPACITY - UI_COLS);
+        s_keyer_history_len = UI_KEYER_HISTORY_CAPACITY - UI_COLS;
+        s_keyer_history[s_keyer_history_len] = '\0';
+        if (s_keyer_history_scroll_top > 0U) {
+            --s_keyer_history_scroll_top;
+        }
+    }
+
+    s_keyer_history[s_keyer_history_len] = ch;
+    ++s_keyer_history_len;
+    s_keyer_history[s_keyer_history_len] = '\0';
+    ui_service_keyer_clamp_scroll();
+    if (s_keyer_history_follow_tail) {
+        ui_service_keyer_follow_latest();
+    }
+}
+
+void ui_service_keyer_backspace_decoded(void)
+{
+    if (s_keyer_history_len == 0U) {
+        return;
+    }
+
+    --s_keyer_history_len;
+    s_keyer_history[s_keyer_history_len] = '\0';
+    ui_service_keyer_clamp_scroll();
+    if (s_keyer_history_follow_tail) {
+        ui_service_keyer_follow_latest();
+    }
+}
+
+void ui_service_keyer_clear_decoded(void)
+{
+    s_keyer_history_len = 0U;
+    s_keyer_history[0] = '\0';
+    s_keyer_history_scroll_top = 0U;
+    s_keyer_history_follow_tail = true;
+}
+
 static int ui_service_read_battery_percent(void)
 {
     int percent = 0;
@@ -202,6 +341,8 @@ static int ui_service_edit_min(ui_edit_target_t target)
     switch (target) {
     case UI_EDIT_VOLUME:
         return UI_VOLUME_MIN;
+    case UI_EDIT_TONE_HZ:
+        return UI_TONE_HZ_MIN;
     case UI_EDIT_KEY_IN_WPM:
         return UI_WPM_MIN;
     case UI_EDIT_LESSON:
@@ -237,6 +378,8 @@ static int ui_service_edit_max(ui_edit_target_t target)
     switch (target) {
     case UI_EDIT_VOLUME:
         return UI_VOLUME_MAX;
+    case UI_EDIT_TONE_HZ:
+        return UI_TONE_HZ_MAX;
     case UI_EDIT_KEY_IN_WPM:
         return UI_WPM_MAX;
     case UI_EDIT_LESSON:
@@ -272,6 +415,8 @@ static int ui_service_edit_step(ui_edit_target_t target)
     switch (target) {
     case UI_EDIT_VOLUME:
         return UI_VOLUME_STEP;
+    case UI_EDIT_TONE_HZ:
+        return UI_TONE_HZ_STEP;
     case UI_EDIT_KEY_IN_WPM:
         return UI_WPM_STEP;
     case UI_EDIT_LESSON:
@@ -301,6 +446,10 @@ static size_t ui_service_edit_max_digits(ui_edit_target_t target)
         return 1U;
     }
 
+    if (target == UI_EDIT_TONE_HZ) {
+        return 3U;
+    }
+
     return 2U;
 }
 
@@ -309,6 +458,8 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
     switch (target) {
     case UI_EDIT_VOLUME:
         return audio_service_get_volume();
+    case UI_EDIT_TONE_HZ:
+        return audio_service_get_tone_hz();
     case UI_EDIT_KEY_IN_WPM:
         return keyer_service_get_key_in_wpm();
     case UI_EDIT_LESSON:
@@ -350,6 +501,8 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     switch (target) {
     case UI_EDIT_VOLUME:
         return UI_INPUT_EVENT_VOLUME_CHANGED;
+    case UI_EDIT_TONE_HZ:
+        return UI_INPUT_EVENT_TONE_CHANGED;
     case UI_EDIT_KEY_IN_WPM:
         return UI_INPUT_EVENT_KEY_IN_WPM_CHANGED;
     case UI_EDIT_LESSON:
@@ -381,6 +534,8 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
     switch (target) {
     case UI_EDIT_VOLUME:
         return UI_SETTING_VOLUME;
+    case UI_EDIT_TONE_HZ:
+        return UI_SETTING_TONE_HZ;
     case UI_EDIT_KEY_IN_WPM:
         return UI_SETTING_KEY_IN_WPM;
     case UI_EDIT_LESSON:
@@ -950,9 +1105,17 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
     unsigned wpm;
     char wpm_text[3];
+    uint8_t row;
 
     if (screen == NULL) {
         return;
+    }
+
+    for (row = 0U; row < UI_KEYER_VISIBLE_LINES; ++row) {
+        ui_service_keyer_render_history_line(screen->line[row],
+                                             sizeof(screen->line[row]),
+                                             (uint16_t)(s_keyer_history_scroll_top + row));
+        screen->line_color[row] = MINI_CW_SCREEN_COLOR_GREEN;
     }
 
     memset(screen->line[5], ' ', UI_COLS);
@@ -1085,6 +1248,32 @@ static void ui_service_render_lesson_menu(void)
     } else {
         snprintf(screen.line[4], sizeof(screen.line[4]), "5 Group:%u", config->group_len);
     }
+
+    ui_screen_render(&screen);
+}
+
+static void ui_service_render_keyer_menu(void)
+{
+    mini_cw_screen_t screen;
+
+    ui_service_prepare_screen(&screen);
+
+    ui_service_format_value_line(screen.line[0],
+                                 sizeof(screen.line[0]),
+                                 1U,
+                                 "1 WPM:",
+                                 keyer_service_get_key_in_wpm(),
+                                 "");
+    ui_service_format_value_line(screen.line[1],
+                                 sizeof(screen.line[1]),
+                                 2U,
+                                 "2 Tone:",
+                                 audio_service_get_tone_hz(),
+                                 "Hz");
+    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3");
+    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
 
     ui_screen_render(&screen);
 }
@@ -1223,6 +1412,9 @@ static void ui_service_render_system_menu(void)
 static void ui_service_render_mode_menu(void)
 {
     switch (s_ui.mode) {
+    case UI_SERVICE_MODE_KEYER:
+        ui_service_render_keyer_menu();
+        break;
     case UI_SERVICE_MODE_LESSONS:
         ui_service_render_lesson_menu();
         break;
@@ -1238,7 +1430,6 @@ static void ui_service_render_mode_menu(void)
     case UI_SERVICE_MODE_SYSTEM:
         ui_service_render_system_menu();
         break;
-    case UI_SERVICE_MODE_KEYER:
     default:
         ui_service_render_no_settings("No settings");
         break;
@@ -1377,7 +1568,13 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
 {
     ui_edit_target_t target = UI_EDIT_NONE;
 
-    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {
+    if (s_ui.mode == UI_SERVICE_MODE_KEYER) {
+        if (item == 1U) {
+            target = UI_EDIT_KEY_IN_WPM;
+        } else if (item == 2U) {
+            target = UI_EDIT_TONE_HZ;
+        }
+    } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {
         if (item == 1U) {
             target = UI_EDIT_VOLUME;
         } else if (item == 3U) {
@@ -1573,19 +1770,35 @@ static ui_input_event_t ui_service_map_normal_char(char ch)
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
     } else if (s_ui.mode == UI_SERVICE_MODE_KEYER &&
                ((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-                (ch >= '0' && ch <= '9'))) {
+                (ch >= '0' && ch <= '9') || ch == '.' || ch == ',' || ch == '?' ||
+                ch == '/' || ch == '=')) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
-    } else if (s_ui.mode == UI_SERVICE_MODE_KEYER && (ch == '+' || ch == '=')) {
-        event.type = UI_INPUT_EVENT_WPM_UP;
-    } else if (s_ui.mode == UI_SERVICE_MODE_KEYER && ch == '-') {
-        event.type = UI_INPUT_EVENT_WPM_DOWN;
-    } else if (s_ui.mode == UI_SERVICE_MODE_KEYER && ch == ']') {
-        event.type = UI_INPUT_EVENT_PITCH_UP;
-    } else if (s_ui.mode == UI_SERVICE_MODE_KEYER && ch == '[') {
-        event.type = UI_INPUT_EVENT_PITCH_DOWN;
     }
 
     return event;
+}
+
+static bool ui_service_handle_keyer_fn_scroll(const ui_cardputer_port_event_t *port_event)
+{
+    if (port_event == NULL || port_event->type != UI_CARDPUTER_PORT_EVENT_CHAR) {
+        return false;
+    }
+    if (s_ui.view != UI_VIEW_NORMAL || s_ui.mode != UI_SERVICE_MODE_KEYER || !port_event->fn) {
+        return false;
+    }
+
+    if (port_event->ch == ';') {
+        ui_service_keyer_scroll_decoded(-1);
+        ui_service_render_current_view();
+        return true;
+    }
+    if (port_event->ch == '.') {
+        ui_service_keyer_scroll_decoded(1);
+        ui_service_render_current_view();
+        return true;
+    }
+
+    return false;
 }
 
 void ui_service_init(void)
@@ -1649,6 +1862,10 @@ ui_input_event_t ui_service_poll_input(void)
     }
 
     if (port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
+        return UI_EVENT_NONE;
+    }
+
+    if (ui_service_handle_keyer_fn_scroll(&port_event)) {
         return UI_EVENT_NONE;
     }
 

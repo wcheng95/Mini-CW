@@ -38,11 +38,19 @@ extern "C" {
 
 #define UI_TOP_MODE_W 13
 
+typedef enum {
+    MINI_CW_SCREEN_COLOR_DEFAULT = 0,
+    MINI_CW_SCREEN_COLOR_WHITE,
+    MINI_CW_SCREEN_COLOR_GREEN,
+    MINI_CW_SCREEN_COLOR_CYAN,
+} mini_cw_screen_color_t;
+
 typedef struct {
     char mode[UI_TOP_MODE_W + 1];
     char top_right[UI_COLS + 1];
 
     char line[UI_MODE_LINES][UI_COLS + 1];
+    mini_cw_screen_color_t line_color[UI_MODE_LINES];
 } mini_cw_screen_t;
 
 void ui_screen_init(void);
