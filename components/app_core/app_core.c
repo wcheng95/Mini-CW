@@ -25,11 +25,17 @@
 static const char *TAG = "app_core";
 
 #define APP_INPUT_POLL_MS 5U
+#define APP_SYSTEM_CONFIG_SAVE_DELAY_MS 1000U
 
 static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
 {
     TickType_t ticks = pdMS_TO_TICKS(ms);
     return ticks > 0 ? ticks : 1;
+}
+
+static bool app_core_tick_reached(TickType_t now, TickType_t due)
+{
+    return (TickType_t)(now - due) < (TickType_t)(UINT32_MAX / 2U);
 }
 
 typedef struct {
@@ -41,6 +47,8 @@ static app_state_t s_app = {
     .mode = APP_MODE_KEYER,
     .initialized = false,
 };
+static bool s_system_config_dirty;
+static TickType_t s_system_config_save_due;
 
 static app_mode_t app_core_ui_mode_to_app(ui_service_mode_t mode)
 {
@@ -88,10 +96,40 @@ static bool app_core_system_config_equal(const storage_system_config_t *a,
            a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm;
 }
 
-static void app_core_save_system_config(void)
+static void app_core_mark_system_config_dirty(void)
 {
-    storage_system_config_t config = app_core_current_system_config();
-    storage_system_save_config(&config);
+    s_system_config_dirty = true;
+    s_system_config_save_due =
+        xTaskGetTickCount() + app_core_ms_to_delay_ticks(APP_SYSTEM_CONFIG_SAVE_DELAY_MS);
+}
+
+static void app_core_maybe_save_dirty_config(void)
+{
+    TickType_t now;
+    storage_system_config_t config;
+
+    if (!s_system_config_dirty) {
+        return;
+    }
+
+    now = xTaskGetTickCount();
+    if (!app_core_tick_reached(now, s_system_config_save_due)) {
+        return;
+    }
+
+    if (audio_service_is_busy()) {
+        s_system_config_save_due =
+            now + app_core_ms_to_delay_ticks(APP_SYSTEM_CONFIG_SAVE_DELAY_MS);
+        return;
+    }
+
+    config = app_core_current_system_config();
+    if (storage_system_save_config(&config)) {
+        s_system_config_dirty = false;
+    } else {
+        s_system_config_save_due =
+            now + app_core_ms_to_delay_ticks(APP_SYSTEM_CONFIG_SAVE_DELAY_MS);
+    }
 }
 
 static void app_core_apply_system_config(const storage_system_config_t *config)
@@ -161,7 +199,6 @@ static void app_core_handle_lesson_select(void)
         storage_lesson_save_result(result);
     } else {
         cw_trainer_lesson_start();
-        storage_lesson_save_config(cw_trainer_lesson_get_config());
     }
 
     ui_service_refresh();
@@ -179,7 +216,6 @@ static void app_core_handle_word_select(void)
         }
     } else {
         cw_trainer_word_start();
-        storage_word_save_config(cw_trainer_word_get_config());
     }
 
     ui_service_refresh();
@@ -197,7 +233,6 @@ static void app_core_handle_callsign_select(void)
         }
     } else {
         cw_trainer_callsign_start();
-        storage_callsign_save_config(cw_trainer_callsign_get_config());
     }
 
     ui_service_refresh();
@@ -212,7 +247,6 @@ static void app_core_handle_plaintext_select(void)
         storage_plaintext_save_result(result);
     } else {
         cw_trainer_plaintext_start();
-        storage_plaintext_save_config(cw_trainer_plaintext_get_config());
     }
 
     ui_service_refresh();
@@ -226,7 +260,7 @@ static void app_core_handle_volume_changed(const ui_input_event_t *event)
 
     audio_service_set_volume((uint8_t)event->value);
     audio_service_play_feedback_beep();
-    app_core_save_system_config();
+    app_core_mark_system_config_dirty();
     ui_service_refresh();
 }
 
@@ -237,7 +271,7 @@ static void app_core_handle_key_in_wpm_changed(const ui_input_event_t *event)
     }
 
     keyer_service_set_key_in_wpm((uint8_t)event->value);
-    app_core_save_system_config();
+    app_core_mark_system_config_dirty();
     ui_service_refresh();
 }
 
@@ -250,7 +284,7 @@ static void app_core_handle_key_in_mode_changed(const ui_input_event_t *event)
     }
 
     keyer_service_cycle_key_in_mode(direction);
-    app_core_save_system_config();
+    app_core_mark_system_config_dirty();
     ui_service_refresh();
 }
 
@@ -568,10 +602,12 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         break;
     case UI_INPUT_EVENT_PITCH_UP:
         cw_trainer_adjust_pitch(50);
+        app_core_mark_system_config_dirty();
         ui_service_refresh();
         break;
     case UI_INPUT_EVENT_PITCH_DOWN:
         cw_trainer_adjust_pitch(-50);
+        app_core_mark_system_config_dirty();
         ui_service_refresh();
         break;
     case UI_INPUT_EVENT_NONE:
@@ -624,6 +660,7 @@ void app_core_run(void)
         keyer_service_update();
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);
+        app_core_maybe_save_dirty_config();
         vTaskDelay(app_core_ms_to_delay_ticks(APP_INPUT_POLL_MS));
     }
 }
