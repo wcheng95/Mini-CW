@@ -134,6 +134,13 @@ void cw_trainer_service_init(void)
 
     ESP_LOGI(TAG, "initialized trainer service");
 }
+
+void cw_trainer_service_update(void)
+{
+    cw_word_mode_update();
+    cw_callsign_mode_update();
+}
+
 void cw_trainer_start_rx_practice(void)
 {
     s_rx_active = true;

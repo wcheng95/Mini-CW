@@ -8,6 +8,8 @@
 
 #include "audio_service.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -24,6 +26,8 @@ static const char *TAG = "cw_word_mode";
 #define CW_WORD_LESSON_MAX 40U
 #define CW_WORD_MAX_LEN_MIN 2U
 #define CW_WORD_MAX_LEN_MAX 15U
+#define CW_WORD_DELAY_S_MIN 0U
+#define CW_WORD_DELAY_S_MAX 5U
 #define CW_WORD_COPY_MAX 32U
 
 static const char *const CW_WORD_BANK[] = {
@@ -57,6 +61,8 @@ static cw_word_config_t s_word_config = {
     .min_char_wpm = 10,
     .lesson = 40,
     .max_word_len = 15,
+    .max_wpm = 30,
+    .delay_s = 1,
 };
 
 static cw_word_result_t s_word_result = {
@@ -80,6 +86,25 @@ static uint8_t s_word_current_index;
 static uint8_t s_word_current_wpm;
 static uint8_t s_word_copy_len;
 static bool s_word_last_correct;
+static bool s_word_play_pending;
+static TickType_t s_word_play_due_tick;
+
+static TickType_t cw_word_seconds_to_ticks(uint8_t seconds)
+{
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)seconds * 1000U);
+    return ticks > 0 ? ticks : 1;
+}
+
+static bool cw_word_tick_reached(TickType_t now, TickType_t due)
+{
+    return (TickType_t)(now - due) < (TickType_t)(UINT32_MAX / 2U);
+}
+
+static void cw_word_clear_pending_play(void)
+{
+    s_word_play_pending = false;
+    s_word_play_due_tick = 0;
+}
 
 static void cw_word_normalize_config(cw_word_config_t *config)
 {
@@ -87,19 +112,26 @@ static void cw_word_normalize_config(cw_word_config_t *config)
         return;
     }
 
+    config->max_wpm = cw_trainer_clamp_u8(config->max_wpm, CW_WORD_WPM_MIN, CW_WORD_WPM_MAX);
     config->start_wpm = cw_trainer_clamp_u8(config->start_wpm, CW_WORD_WPM_MIN, CW_WORD_WPM_MAX);
     config->min_char_wpm =
         cw_trainer_clamp_u8(config->min_char_wpm, CW_WORD_WPM_MIN, CW_WORD_WPM_MAX);
     config->lesson = cw_trainer_clamp_u8(config->lesson, CW_WORD_LESSON_MIN, CW_WORD_LESSON_MAX);
     config->max_word_len =
         cw_trainer_clamp_u8(config->max_word_len, CW_WORD_MAX_LEN_MIN, CW_WORD_MAX_LEN_MAX);
+    config->delay_s = cw_trainer_clamp_u8(config->delay_s, CW_WORD_DELAY_S_MIN, CW_WORD_DELAY_S_MAX);
+
+    if (config->start_wpm > config->max_wpm) {
+        config->start_wpm = config->max_wpm;
+    }
 }
 
 static bool cw_word_config_equal(const cw_word_config_t *a, const cw_word_config_t *b)
 {
     return a != NULL && b != NULL && a->start_wpm == b->start_wpm &&
            a->min_char_wpm == b->min_char_wpm && a->lesson == b->lesson &&
-           a->max_word_len == b->max_word_len;
+           a->max_word_len == b->max_word_len && a->max_wpm == b->max_wpm &&
+           a->delay_s == b->delay_s;
 }
 
 static int cw_word_koch_index(char ch)
@@ -207,6 +239,7 @@ static void cw_word_reset_session(bool stop_playback)
     memset(s_word_sent_effective_wpm, 0, sizeof(s_word_sent_effective_wpm));
     cw_word_clear_copy();
     cw_word_clear_last_answer();
+    cw_word_clear_pending_play();
     s_word_current_index = 0U;
     s_word_current_wpm = s_word_config.start_wpm;
     cw_word_set_state(CW_WORD_STATE_READY);
@@ -309,8 +342,20 @@ static void cw_word_play_index(uint8_t index, bool record_speed)
              record_speed ? 0U : 1U);
 }
 
+static void cw_word_schedule_or_play_next(void)
+{
+    if (s_word_config.delay_s == 0U) {
+        cw_word_play_index(s_word_current_index, true);
+        return;
+    }
+
+    s_word_play_pending = true;
+    s_word_play_due_tick = xTaskGetTickCount() + cw_word_seconds_to_ticks(s_word_config.delay_s);
+}
+
 static void cw_word_finish_attempt(void)
 {
+    cw_word_clear_pending_play();
     ++s_word_result.attempts;
 
     if (s_word_result.score > s_word_result.best_score) {
@@ -337,6 +382,26 @@ static void cw_word_finish_attempt(void)
 void cw_word_mode_init(void)
 {
     cw_word_reset_session(false);
+}
+
+void cw_word_mode_update(void)
+{
+    if (!s_word_play_pending) {
+        return;
+    }
+
+    if (s_word_view.state != CW_WORD_STATE_COPYING ||
+        s_word_current_index >= CW_WORD_ATTEMPT_WORDS) {
+        cw_word_clear_pending_play();
+        return;
+    }
+
+    if (!cw_word_tick_reached(xTaskGetTickCount(), s_word_play_due_tick)) {
+        return;
+    }
+
+    cw_word_clear_pending_play();
+    cw_word_play_index(s_word_current_index, true);
 }
 
 const cw_word_config_t *cw_word_mode_get_config(void)
@@ -367,11 +432,13 @@ void cw_word_mode_set_config(const cw_word_config_t *config)
     }
 
     ESP_LOGI(TAG,
-             "word config: start=%u min_char=%u lesson=%u max_len=%u",
+             "word config: start=%u min_char=%u lesson=%u max_len=%u max=%u delay=%u",
              (unsigned)s_word_config.start_wpm,
              (unsigned)s_word_config.min_char_wpm,
              (unsigned)s_word_config.lesson,
-             (unsigned)s_word_config.max_word_len);
+             (unsigned)s_word_config.max_word_len,
+             (unsigned)s_word_config.max_wpm,
+             (unsigned)s_word_config.delay_s);
 }
 
 void cw_word_mode_abort(void)
@@ -385,6 +452,7 @@ void cw_word_mode_start(void)
     cw_word_reset_run_stats();
     cw_word_clear_copy();
     cw_word_clear_last_answer();
+    cw_word_clear_pending_play();
     s_word_current_index = 0U;
     s_word_current_wpm = s_word_config.start_wpm;
     cw_word_generate_attempt();
@@ -396,7 +464,7 @@ bool cw_word_mode_append_char(char ch)
 {
     char normalized;
 
-    if (s_word_view.state != CW_WORD_STATE_COPYING) {
+    if (s_word_view.state != CW_WORD_STATE_COPYING || s_word_play_pending) {
         return false;
     }
 
@@ -417,7 +485,8 @@ bool cw_word_mode_append_char(char ch)
 
 void cw_word_mode_backspace(void)
 {
-    if (s_word_view.state != CW_WORD_STATE_COPYING || s_word_copy_len == 0U) {
+    if (s_word_view.state != CW_WORD_STATE_COPYING || s_word_play_pending ||
+        s_word_copy_len == 0U) {
         return;
     }
 
@@ -434,7 +503,7 @@ const cw_word_result_t *cw_word_mode_submit(void)
     bool correct;
     uint8_t sent_wpm;
 
-    if (s_word_view.state != CW_WORD_STATE_COPYING ||
+    if (s_word_view.state != CW_WORD_STATE_COPYING || s_word_play_pending ||
         s_word_current_index >= CW_WORD_ATTEMPT_WORDS ||
         s_word_attempt[s_word_current_index] == NULL) {
         return &s_word_result;
@@ -457,7 +526,7 @@ const cw_word_result_t *cw_word_mode_submit(void)
         if (sent_wpm > s_word_result.max_wpm) {
             s_word_result.max_wpm = sent_wpm;
         }
-        if (s_word_current_wpm < CW_WORD_WPM_MAX) {
+        if (s_word_current_wpm < s_word_config.max_wpm) {
             ++s_word_current_wpm;
         }
         s_word_result.score += (uint32_t)s_word_current_wpm * (uint32_t)strlen(expected);
@@ -484,13 +553,13 @@ const cw_word_result_t *cw_word_mode_submit(void)
     }
 
     cw_word_update_view();
-    cw_word_play_index(s_word_current_index, true);
+    cw_word_schedule_or_play_next();
     return &s_word_result;
 }
 
 void cw_word_mode_replay(void)
 {
-    if (s_word_view.state != CW_WORD_STATE_COPYING) {
+    if (s_word_view.state != CW_WORD_STATE_COPYING || s_word_play_pending) {
         return;
     }
 

@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 void cw_trainer_service_init(void);
+void cw_trainer_service_update(void);
 void cw_trainer_start_rx_practice(void);
 void cw_trainer_start_tx_practice(void);
 void cw_trainer_start_tone_test(void);
@@ -80,6 +81,8 @@ typedef struct {
     uint8_t min_char_wpm;
     uint8_t lesson;
     uint8_t max_word_len;
+    uint8_t max_wpm;
+    uint8_t delay_s;
 } cw_word_config_t;
 
 typedef struct {
@@ -128,6 +131,7 @@ typedef struct {
     uint8_t start_wpm;
     uint8_t min_char_wpm;
     uint8_t max_wpm;
+    uint8_t delay_s;
 } cw_callsign_config_t;
 
 typedef struct {

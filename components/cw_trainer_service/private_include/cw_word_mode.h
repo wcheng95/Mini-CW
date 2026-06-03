@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 void cw_word_mode_init(void);
+void cw_word_mode_update(void);
 const cw_word_config_t *cw_word_mode_get_config(void);
 void cw_word_mode_set_config(const cw_word_config_t *config);
 void cw_word_mode_start(void);

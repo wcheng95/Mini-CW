@@ -310,6 +310,11 @@ static void keyer_emit_decoder_result(keyer_decoder_result_t result)
         s_decoder_char_finalized = false;
         s_decoder_space_emitted = true;
         break;
+    case KEYER_DECODER_RESULT_ENTER:
+        keyer_push_event(KEYER_EVENT_ENTER, '\n', 0U);
+        s_decoder_char_finalized = false;
+        s_decoder_space_emitted = true;
+        break;
     case KEYER_DECODER_RESULT_SPACE:
         keyer_push_event(KEYER_EVENT_WORD_SPACE, ' ', 0U);
         s_decoder_char_finalized = false;

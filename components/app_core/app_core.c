@@ -345,9 +345,12 @@ static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
         case UI_SETTING_WORD_MIN_CHAR_WPM:
         case UI_SETTING_WORD_LESSON:
         case UI_SETTING_WORD_MAX_LEN:
+        case UI_SETTING_WORD_MAX_WPM:
+        case UI_SETTING_WORD_DELAY_S:
         case UI_SETTING_CALLSIGN_SPEED:
         case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
         case UI_SETTING_CALLSIGN_MAX_WPM:
+        case UI_SETTING_CALLSIGN_DELAY_S:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
@@ -380,6 +383,12 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
         case UI_SETTING_WORD_MAX_LEN:
             config.max_word_len = (uint8_t)event->value;
             break;
+        case UI_SETTING_WORD_MAX_WPM:
+            config.max_wpm = (uint8_t)event->value;
+            break;
+        case UI_SETTING_WORD_DELAY_S:
+            config.delay_s = (uint8_t)event->value;
+            break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
         case UI_SETTING_TONE_HZ:
@@ -393,6 +402,7 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
         case UI_SETTING_CALLSIGN_SPEED:
         case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
         case UI_SETTING_CALLSIGN_MAX_WPM:
+        case UI_SETTING_CALLSIGN_DELAY_S:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
@@ -422,6 +432,9 @@ static void app_core_handle_callsign_config_changed(const ui_input_event_t *even
         case UI_SETTING_CALLSIGN_MAX_WPM:
             config.max_wpm = (uint8_t)event->value;
             break;
+        case UI_SETTING_CALLSIGN_DELAY_S:
+            config.delay_s = (uint8_t)event->value;
+            break;
         case UI_SETTING_NONE:
         case UI_SETTING_VOLUME:
         case UI_SETTING_TONE_HZ:
@@ -436,6 +449,8 @@ static void app_core_handle_callsign_config_changed(const ui_input_event_t *even
         case UI_SETTING_WORD_MIN_CHAR_WPM:
         case UI_SETTING_WORD_LESSON:
         case UI_SETTING_WORD_MAX_LEN:
+        case UI_SETTING_WORD_MAX_WPM:
+        case UI_SETTING_WORD_DELAY_S:
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
@@ -476,9 +491,12 @@ static void app_core_handle_plaintext_config_changed(const ui_input_event_t *eve
         case UI_SETTING_WORD_MIN_CHAR_WPM:
         case UI_SETTING_WORD_LESSON:
         case UI_SETTING_WORD_MAX_LEN:
+        case UI_SETTING_WORD_MAX_WPM:
+        case UI_SETTING_WORD_DELAY_S:
         case UI_SETTING_CALLSIGN_SPEED:
         case UI_SETTING_CALLSIGN_MIN_CHAR_WPM:
         case UI_SETTING_CALLSIGN_MAX_WPM:
+        case UI_SETTING_CALLSIGN_DELAY_S:
         case UI_SETTING_USB_DRIVE:
         default:
             break;
@@ -521,6 +539,30 @@ static bool app_core_append_training_copy_char(char key)
     }
     if (s_app.mode == APP_MODE_CALLSIGNS) {
         return cw_trainer_callsign_append_char(key);
+    }
+
+    return false;
+}
+
+static bool app_core_append_training_space(void)
+{
+    if (s_app.mode == APP_MODE_WORDS || s_app.mode == APP_MODE_CALLSIGNS) {
+        return false;
+    }
+
+    return app_core_append_training_copy_char(' ');
+}
+
+static bool app_core_handle_training_enter_from_keyer(void)
+{
+    if (s_app.mode == APP_MODE_WORDS) {
+        app_core_handle_word_select();
+        return false;
+    }
+
+    if (s_app.mode == APP_MODE_CALLSIGNS) {
+        app_core_handle_callsign_select();
+        return false;
     }
 
     return false;
@@ -573,6 +615,8 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
     case KEYER_EVENT_BACKSPACE:
         ui_service_keyer_backspace_decoded();
         return true;
+    case KEYER_EVENT_ENTER:
+        return false;
     case KEYER_EVENT_DIT:
     case KEYER_EVENT_DAH:
     case KEYER_EVENT_TIMING_WARNING:
@@ -602,10 +646,13 @@ static void app_core_handle_keyer_event(const keyer_event_t *event)
             handled = app_core_append_training_copy_char(event->decoded_char);
             break;
         case KEYER_EVENT_WORD_SPACE:
-            handled = app_core_append_training_copy_char(' ');
+            handled = app_core_append_training_space();
             break;
         case KEYER_EVENT_BACKSPACE:
             handled = app_core_backspace_training_copy();
+            break;
+        case KEYER_EVENT_ENTER:
+            handled = app_core_handle_training_enter_from_keyer();
             break;
         case KEYER_EVENT_DIT:
         case KEYER_EVENT_DAH:
@@ -785,6 +832,7 @@ void app_core_run(void)
 
     for (;;) {
         keyer_service_update();
+        cw_trainer_service_update();
         app_core_drain_keyer_events();
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);

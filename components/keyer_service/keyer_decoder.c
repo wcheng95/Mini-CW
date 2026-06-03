@@ -33,6 +33,21 @@ static const keyer_decoder_result_t KEYER_DECODER_NONE = {
     .ch = '\0',
 };
 
+static bool keyer_decoder_is_all_dits(const keyer_decoder_t *decoder)
+{
+    if (decoder == NULL) {
+        return false;
+    }
+
+    for (uint8_t i = 0U; i < decoder->len; ++i) {
+        if (decoder->pattern[i] != '.') {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void keyer_decoder_reset(keyer_decoder_t *decoder)
 {
     if (decoder == NULL) {
@@ -78,9 +93,16 @@ keyer_decoder_result_t keyer_decoder_finalize(keyer_decoder_t *decoder)
         return result;
     }
 
-    if (strcmp(decoder->pattern, "........") == 0) {
+    if (decoder->len >= 6U && decoder->len <= 12U && keyer_decoder_is_all_dits(decoder)) {
         result.type = KEYER_DECODER_RESULT_BACKSPACE;
         result.ch = '\b';
+        keyer_decoder_reset(decoder);
+        return result;
+    }
+
+    if (strcmp(decoder->pattern, ".-..-.") == 0) {
+        result.type = KEYER_DECODER_RESULT_ENTER;
+        result.ch = '\n';
         keyer_decoder_reset(decoder);
         return result;
     }

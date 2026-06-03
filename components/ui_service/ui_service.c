@@ -51,9 +51,12 @@ typedef enum {
     UI_EDIT_WORD_MIN_CHAR_WPM,
     UI_EDIT_WORD_LESSON,
     UI_EDIT_WORD_MAX_LEN,
+    UI_EDIT_WORD_MAX_WPM,
+    UI_EDIT_WORD_DELAY_S,
     UI_EDIT_CALLSIGN_SPEED,
     UI_EDIT_CALLSIGN_MIN_CHAR_WPM,
     UI_EDIT_CALLSIGN_MAX_WPM,
+    UI_EDIT_CALLSIGN_DELAY_S,
     UI_EDIT_PLAINTEXT_CODE_WPM,
     UI_EDIT_PLAINTEXT_EFFECTIVE_WPM,
 } ui_edit_target_t;
@@ -97,6 +100,8 @@ static bool s_cardputer_ready;
 #define UI_WPM_MIN 5
 #define UI_WPM_MAX 60
 #define UI_WPM_STEP 1
+#define UI_DELAY_S_MIN 0
+#define UI_DELAY_S_MAX 5
 #define UI_KEYER_VISIBLE_LINES 5U
 #define UI_KEYER_HISTORY_LINES 64U
 #define UI_KEYER_HISTORY_CAPACITY (UI_KEYER_HISTORY_LINES * UI_COLS)
@@ -361,9 +366,16 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return 9;
     case UI_EDIT_WORD_MAX_LEN:
         return 2;
+    case UI_EDIT_WORD_MAX_WPM:
+        return UI_WPM_MIN;
+    case UI_EDIT_WORD_DELAY_S:
+        return UI_DELAY_S_MIN;
     case UI_EDIT_CALLSIGN_SPEED:
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
     case UI_EDIT_CALLSIGN_MAX_WPM:
+        return UI_WPM_MIN;
+    case UI_EDIT_CALLSIGN_DELAY_S:
+        return UI_DELAY_S_MIN;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
         return UI_WPM_MIN;
@@ -398,9 +410,16 @@ static int ui_service_edit_max(ui_edit_target_t target)
         return 40;
     case UI_EDIT_WORD_MAX_LEN:
         return 15;
+    case UI_EDIT_WORD_MAX_WPM:
+        return 40;
+    case UI_EDIT_WORD_DELAY_S:
+        return UI_DELAY_S_MAX;
     case UI_EDIT_CALLSIGN_SPEED:
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
     case UI_EDIT_CALLSIGN_MAX_WPM:
+        return 40;
+    case UI_EDIT_CALLSIGN_DELAY_S:
+        return UI_DELAY_S_MAX;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
         return 40;
@@ -428,9 +447,12 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_WORD_MIN_CHAR_WPM:
     case UI_EDIT_WORD_LESSON:
     case UI_EDIT_WORD_MAX_LEN:
+    case UI_EDIT_WORD_MAX_WPM:
+    case UI_EDIT_WORD_DELAY_S:
     case UI_EDIT_CALLSIGN_SPEED:
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
     case UI_EDIT_CALLSIGN_MAX_WPM:
+    case UI_EDIT_CALLSIGN_DELAY_S:
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
         return 1;
@@ -442,7 +464,8 @@ static int ui_service_edit_step(ui_edit_target_t target)
 
 static size_t ui_service_edit_max_digits(ui_edit_target_t target)
 {
-    if (target == UI_EDIT_LESSON_DURATION || target == UI_EDIT_LESSON_GROUP_LEN) {
+    if (target == UI_EDIT_LESSON_DURATION || target == UI_EDIT_LESSON_GROUP_LEN ||
+        target == UI_EDIT_WORD_DELAY_S || target == UI_EDIT_CALLSIGN_DELAY_S) {
         return 1U;
     }
 
@@ -480,12 +503,18 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return cw_trainer_word_get_config()->lesson;
     case UI_EDIT_WORD_MAX_LEN:
         return cw_trainer_word_get_config()->max_word_len;
+    case UI_EDIT_WORD_MAX_WPM:
+        return cw_trainer_word_get_config()->max_wpm;
+    case UI_EDIT_WORD_DELAY_S:
+        return cw_trainer_word_get_config()->delay_s;
     case UI_EDIT_CALLSIGN_SPEED:
         return cw_trainer_callsign_get_config()->start_wpm;
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
         return cw_trainer_callsign_get_config()->min_char_wpm;
     case UI_EDIT_CALLSIGN_MAX_WPM:
         return cw_trainer_callsign_get_config()->max_wpm;
+    case UI_EDIT_CALLSIGN_DELAY_S:
+        return cw_trainer_callsign_get_config()->delay_s;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
         return cw_trainer_plaintext_get_config()->code_wpm;
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
@@ -515,10 +544,13 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     case UI_EDIT_WORD_MIN_CHAR_WPM:
     case UI_EDIT_WORD_LESSON:
     case UI_EDIT_WORD_MAX_LEN:
+    case UI_EDIT_WORD_MAX_WPM:
+    case UI_EDIT_WORD_DELAY_S:
         return UI_INPUT_EVENT_WORD_CONFIG_CHANGED;
     case UI_EDIT_CALLSIGN_SPEED:
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
     case UI_EDIT_CALLSIGN_MAX_WPM:
+    case UI_EDIT_CALLSIGN_DELAY_S:
         return UI_INPUT_EVENT_CALLSIGN_CONFIG_CHANGED;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
@@ -556,12 +588,18 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
         return UI_SETTING_WORD_LESSON;
     case UI_EDIT_WORD_MAX_LEN:
         return UI_SETTING_WORD_MAX_LEN;
+    case UI_EDIT_WORD_MAX_WPM:
+        return UI_SETTING_WORD_MAX_WPM;
+    case UI_EDIT_WORD_DELAY_S:
+        return UI_SETTING_WORD_DELAY_S;
     case UI_EDIT_CALLSIGN_SPEED:
         return UI_SETTING_CALLSIGN_SPEED;
     case UI_EDIT_CALLSIGN_MIN_CHAR_WPM:
         return UI_SETTING_CALLSIGN_MIN_CHAR_WPM;
     case UI_EDIT_CALLSIGN_MAX_WPM:
         return UI_SETTING_CALLSIGN_MAX_WPM;
+    case UI_EDIT_CALLSIGN_DELAY_S:
+        return UI_SETTING_CALLSIGN_DELAY_S;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
         return UI_SETTING_PLAINTEXT_CODE_WPM;
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
@@ -1309,8 +1347,18 @@ static void ui_service_render_word_menu(void)
                                  "4 MaxLen:",
                                  config->max_word_len,
                                  "");
-    ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
-    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
+    ui_service_format_value_line(screen.line[4],
+                                 sizeof(screen.line[4]),
+                                 5U,
+                                 "5 MaxWPM:",
+                                 config->max_wpm,
+                                 "");
+    ui_service_format_value_line(screen.line[5],
+                                 sizeof(screen.line[5]),
+                                 6U,
+                                 "6 Delay_s:",
+                                 config->delay_s,
+                                 "");
 
     ui_screen_render(&screen);
 }
@@ -1340,7 +1388,12 @@ static void ui_service_render_callsign_menu(void)
                                  "3 MaxWPM:",
                                  config->max_wpm,
                                  "");
-    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    ui_service_format_value_line(screen.line[3],
+                                 sizeof(screen.line[3]),
+                                 4U,
+                                 "4 Delay_s:",
+                                 config->delay_s,
+                                 "");
     ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
     ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
 
@@ -1601,6 +1654,10 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
             target = UI_EDIT_WORD_LESSON;
         } else if (item == 4U) {
             target = UI_EDIT_WORD_MAX_LEN;
+        } else if (item == 5U) {
+            target = UI_EDIT_WORD_MAX_WPM;
+        } else if (item == 6U) {
+            target = UI_EDIT_WORD_DELAY_S;
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_CALLSIGNS) {
         if (item == 1U) {
@@ -1609,6 +1666,8 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
             target = UI_EDIT_CALLSIGN_MIN_CHAR_WPM;
         } else if (item == 3U) {
             target = UI_EDIT_CALLSIGN_MAX_WPM;
+        } else if (item == 4U) {
+            target = UI_EDIT_CALLSIGN_DELAY_S;
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_PLAINTEXT) {
         if (item == 1U) {

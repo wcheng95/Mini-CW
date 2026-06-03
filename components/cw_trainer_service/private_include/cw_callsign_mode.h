@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 void cw_callsign_mode_init(void);
+void cw_callsign_mode_update(void);
 const cw_callsign_config_t *cw_callsign_mode_get_config(void);
 void cw_callsign_mode_set_config(const cw_callsign_config_t *config);
 void cw_callsign_mode_start(void);

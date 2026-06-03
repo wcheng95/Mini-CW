@@ -51,6 +51,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_WORD_MAX_LEN_MAX 15U
 #define STORAGE_CALLSIGN_WPM_MIN 5U
 #define STORAGE_CALLSIGN_WPM_MAX 40U
+#define STORAGE_DELAY_S_MIN 0U
+#define STORAGE_DELAY_S_MAX 5U
 #define STORAGE_PLAINTEXT_WPM_MIN 5U
 #define STORAGE_PLAINTEXT_WPM_MAX 40U
 
@@ -73,6 +75,9 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_PLAINTEXT_CODE_WPM (1UL << 16)
 #define STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM (1UL << 17)
 #define STORAGE_KEY_SYSTEM_TONE_HZ (1UL << 18)
+#define STORAGE_KEY_WORD_MAX_WPM (1UL << 19)
+#define STORAGE_KEY_WORD_DELAY_S (1UL << 20)
+#define STORAGE_KEY_CALLSIGN_DELAY_S (1UL << 21)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -89,8 +94,10 @@ static const char *TAG = "storage_service";
      STORAGE_KEY_LESSON_CODE_WPM | STORAGE_KEY_LESSON_EFFECTIVE_WPM |               \
      STORAGE_KEY_LESSON_GROUP_LEN | STORAGE_KEY_WORD_SPEED |                        \
      STORAGE_KEY_WORD_MIN_CHAR_WPM | STORAGE_KEY_WORD_LESSON |                      \
-     STORAGE_KEY_WORD_MAX_LEN | STORAGE_KEY_CALLSIGN_SPEED |                        \
+     STORAGE_KEY_WORD_MAX_LEN | STORAGE_KEY_WORD_MAX_WPM |                          \
+     STORAGE_KEY_WORD_DELAY_S | STORAGE_KEY_CALLSIGN_SPEED |                        \
      STORAGE_KEY_CALLSIGN_MIN_CHAR_WPM | STORAGE_KEY_CALLSIGN_MAX_WPM |             \
+     STORAGE_KEY_CALLSIGN_DELAY_S |                                                 \
      STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
@@ -471,12 +478,15 @@ static void storage_settings_set_defaults(void)
         .min_char_wpm = 10,
         .lesson = 40,
         .max_word_len = 15,
+        .max_wpm = 30,
+        .delay_s = 1,
     };
 
     s_callsign_config = (cw_callsign_config_t){
         .start_wpm = 20,
         .min_char_wpm = 10,
-        .max_wpm = 40,
+        .max_wpm = 30,
+        .delay_s = 1,
     };
 
     s_plaintext_config = (cw_plaintext_config_t){
@@ -559,6 +569,8 @@ static void storage_normalize_word_config(bool *changed)
 
     s_word_config.start_wpm =
         storage_clamp_u8(s_word_config.start_wpm, STORAGE_WORD_WPM_MIN, STORAGE_WORD_WPM_MAX);
+    s_word_config.max_wpm =
+        storage_clamp_u8(s_word_config.max_wpm, STORAGE_WORD_WPM_MIN, STORAGE_WORD_WPM_MAX);
     s_word_config.min_char_wpm =
         storage_clamp_u8(s_word_config.min_char_wpm, STORAGE_WORD_WPM_MIN, STORAGE_WORD_WPM_MAX);
     s_word_config.lesson =
@@ -567,6 +579,12 @@ static void storage_normalize_word_config(bool *changed)
         storage_clamp_u8(s_word_config.max_word_len,
                          STORAGE_WORD_MAX_LEN_MIN,
                          STORAGE_WORD_MAX_LEN_MAX);
+    s_word_config.delay_s =
+        storage_clamp_u8(s_word_config.delay_s, STORAGE_DELAY_S_MIN, STORAGE_DELAY_S_MAX);
+
+    if (s_word_config.start_wpm > s_word_config.max_wpm) {
+        s_word_config.start_wpm = s_word_config.max_wpm;
+    }
 
     if (memcmp(&before, &s_word_config, sizeof(before)) != 0 && changed != NULL) {
         *changed = true;
@@ -589,6 +607,8 @@ static void storage_normalize_callsign_config(bool *changed)
         storage_clamp_u8(s_callsign_config.min_char_wpm,
                          STORAGE_CALLSIGN_WPM_MIN,
                          STORAGE_CALLSIGN_WPM_MAX);
+    s_callsign_config.delay_s =
+        storage_clamp_u8(s_callsign_config.delay_s, STORAGE_DELAY_S_MIN, STORAGE_DELAY_S_MAX);
 
     if (s_callsign_config.start_wpm > s_callsign_config.max_wpm) {
         s_callsign_config.start_wpm = s_callsign_config.max_wpm;
@@ -854,6 +874,20 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_WORD_MAX_LEN_MAX,
                                            &s_word_config.max_word_len,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "max_wpm")) {
+            *seen_keys |= STORAGE_KEY_WORD_MAX_WPM;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_WORD_WPM_MIN,
+                                           STORAGE_WORD_WPM_MAX,
+                                           &s_word_config.max_wpm,
+                                           changed);
+        } else if (storage_str_equal_ignore_case(key, "delay_s")) {
+            *seen_keys |= STORAGE_KEY_WORD_DELAY_S;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_DELAY_S_MIN,
+                                           STORAGE_DELAY_S_MAX,
+                                           &s_word_config.delay_s,
+                                           changed);
         }
         break;
 
@@ -878,6 +912,13 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_CALLSIGN_WPM_MIN,
                                            STORAGE_CALLSIGN_WPM_MAX,
                                            &s_callsign_config.max_wpm,
+                                           changed);
+        } else if (storage_str_equal_ignore_case(key, "delay_s")) {
+            *seen_keys |= STORAGE_KEY_CALLSIGN_DELAY_S;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_DELAY_S_MIN,
+                                           STORAGE_DELAY_S_MAX,
+                                           &s_callsign_config.delay_s,
                                            changed);
         }
         break;
@@ -976,11 +1017,14 @@ static bool storage_write_settings_file(void)
                            "min_char_wpm=%u\n"
                            "lesson=%u\n"
                            "max_len=%u\n"
+                           "max_wpm=%u\n"
+                           "delay_s=%u\n"
                            "\n"
                            "[calls]\n"
                            "speed=%u\n"
                            "min_char_wpm=%u\n"
                            "max_wpm=%u\n"
+                           "delay_s=%u\n"
                            "\n"
                            "[plain]\n"
                            "code_wpm=%u\n"
@@ -998,9 +1042,12 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_word_config.min_char_wpm,
                            (unsigned)s_word_config.lesson,
                            (unsigned)s_word_config.max_word_len,
+                           (unsigned)s_word_config.max_wpm,
+                           (unsigned)s_word_config.delay_s,
                            (unsigned)s_callsign_config.start_wpm,
                            (unsigned)s_callsign_config.min_char_wpm,
                            (unsigned)s_callsign_config.max_wpm,
+                           (unsigned)s_callsign_config.delay_s,
                            (unsigned)s_plaintext_config.code_wpm,
                            (unsigned)s_plaintext_config.effective_wpm);
     if (write_result < 0 || ferror(file) != 0) {

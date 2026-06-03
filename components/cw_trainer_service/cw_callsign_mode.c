@@ -8,6 +8,8 @@
 
 #include "audio_service.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -20,6 +22,8 @@ static const char *TAG = "cw_callsign_mode";
 #define CW_CALLSIGN_ATTEMPT_CALLS 25U
 #define CW_CALLSIGN_WPM_MIN 5U
 #define CW_CALLSIGN_WPM_MAX 40U
+#define CW_CALLSIGN_DELAY_S_MIN 0U
+#define CW_CALLSIGN_DELAY_S_MAX 5U
 #define CW_CALLSIGN_MAX_LEN 15U
 #define CW_CALLSIGN_COPY_MAX 32U
 
@@ -63,7 +67,8 @@ static const char *const CW_CALLSIGN_BANK[] = {
 static cw_callsign_config_t s_callsign_config = {
     .start_wpm = 20,
     .min_char_wpm = 10,
-    .max_wpm = 40,
+    .max_wpm = 30,
+    .delay_s = 1,
 };
 
 static cw_callsign_result_t s_callsign_result = {
@@ -87,6 +92,25 @@ static uint8_t s_callsign_current_index;
 static uint8_t s_callsign_current_wpm;
 static uint8_t s_callsign_copy_len;
 static bool s_callsign_last_correct;
+static bool s_callsign_play_pending;
+static TickType_t s_callsign_play_due_tick;
+
+static TickType_t cw_callsign_seconds_to_ticks(uint8_t seconds)
+{
+    TickType_t ticks = pdMS_TO_TICKS((uint32_t)seconds * 1000U);
+    return ticks > 0 ? ticks : 1;
+}
+
+static bool cw_callsign_tick_reached(TickType_t now, TickType_t due)
+{
+    return (TickType_t)(now - due) < (TickType_t)(UINT32_MAX / 2U);
+}
+
+static void cw_callsign_clear_pending_play(void)
+{
+    s_callsign_play_pending = false;
+    s_callsign_play_due_tick = 0;
+}
 
 static void cw_callsign_normalize_config(cw_callsign_config_t *config)
 {
@@ -98,6 +122,8 @@ static void cw_callsign_normalize_config(cw_callsign_config_t *config)
     config->start_wpm = cw_trainer_clamp_u8(config->start_wpm, CW_CALLSIGN_WPM_MIN, CW_CALLSIGN_WPM_MAX);
     config->min_char_wpm =
         cw_trainer_clamp_u8(config->min_char_wpm, CW_CALLSIGN_WPM_MIN, CW_CALLSIGN_WPM_MAX);
+    config->delay_s =
+        cw_trainer_clamp_u8(config->delay_s, CW_CALLSIGN_DELAY_S_MIN, CW_CALLSIGN_DELAY_S_MAX);
 
     if (config->start_wpm > config->max_wpm) {
         config->start_wpm = config->max_wpm;
@@ -108,7 +134,8 @@ static bool cw_callsign_config_equal(const cw_callsign_config_t *a,
                                      const cw_callsign_config_t *b)
 {
     return a != NULL && b != NULL && a->start_wpm == b->start_wpm &&
-           a->min_char_wpm == b->min_char_wpm && a->max_wpm == b->max_wpm;
+           a->min_char_wpm == b->min_char_wpm && a->max_wpm == b->max_wpm &&
+           a->delay_s == b->delay_s;
 }
 
 static bool cw_callsign_char_supported(char ch)
@@ -198,6 +225,7 @@ static void cw_callsign_reset_session(bool stop_playback)
     memset(s_callsign_sent_effective_wpm, 0, sizeof(s_callsign_sent_effective_wpm));
     cw_callsign_clear_copy();
     cw_callsign_clear_last_answer();
+    cw_callsign_clear_pending_play();
     s_callsign_current_index = 0U;
     s_callsign_current_wpm = s_callsign_config.start_wpm;
     cw_callsign_set_state(CW_CALLSIGN_STATE_READY);
@@ -299,8 +327,21 @@ static void cw_callsign_play_index(uint8_t index, bool record_speed)
              record_speed ? 0U : 1U);
 }
 
+static void cw_callsign_schedule_or_play_next(void)
+{
+    if (s_callsign_config.delay_s == 0U) {
+        cw_callsign_play_index(s_callsign_current_index, true);
+        return;
+    }
+
+    s_callsign_play_pending = true;
+    s_callsign_play_due_tick =
+        xTaskGetTickCount() + cw_callsign_seconds_to_ticks(s_callsign_config.delay_s);
+}
+
 static void cw_callsign_finish_attempt(void)
 {
+    cw_callsign_clear_pending_play();
     ++s_callsign_result.attempts;
 
     if (s_callsign_result.score > s_callsign_result.best_score) {
@@ -327,6 +368,26 @@ static void cw_callsign_finish_attempt(void)
 void cw_callsign_mode_init(void)
 {
     cw_callsign_reset_session(false);
+}
+
+void cw_callsign_mode_update(void)
+{
+    if (!s_callsign_play_pending) {
+        return;
+    }
+
+    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING ||
+        s_callsign_current_index >= CW_CALLSIGN_ATTEMPT_CALLS) {
+        cw_callsign_clear_pending_play();
+        return;
+    }
+
+    if (!cw_callsign_tick_reached(xTaskGetTickCount(), s_callsign_play_due_tick)) {
+        return;
+    }
+
+    cw_callsign_clear_pending_play();
+    cw_callsign_play_index(s_callsign_current_index, true);
 }
 
 const cw_callsign_config_t *cw_callsign_mode_get_config(void)
@@ -357,10 +418,11 @@ void cw_callsign_mode_set_config(const cw_callsign_config_t *config)
     }
 
     ESP_LOGI(TAG,
-             "callsign config: start=%u min_char=%u max=%u",
+             "callsign config: start=%u min_char=%u max=%u delay=%u",
              (unsigned)s_callsign_config.start_wpm,
              (unsigned)s_callsign_config.min_char_wpm,
-             (unsigned)s_callsign_config.max_wpm);
+             (unsigned)s_callsign_config.max_wpm,
+             (unsigned)s_callsign_config.delay_s);
 }
 
 void cw_callsign_mode_abort(void)
@@ -374,6 +436,7 @@ void cw_callsign_mode_start(void)
     cw_callsign_reset_run_stats();
     cw_callsign_clear_copy();
     cw_callsign_clear_last_answer();
+    cw_callsign_clear_pending_play();
     s_callsign_current_index = 0U;
     s_callsign_current_wpm = s_callsign_config.start_wpm;
     cw_callsign_generate_attempt();
@@ -385,7 +448,7 @@ bool cw_callsign_mode_append_char(char ch)
 {
     char normalized;
 
-    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING) {
+    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING || s_callsign_play_pending) {
         return false;
     }
 
@@ -406,7 +469,8 @@ bool cw_callsign_mode_append_char(char ch)
 
 void cw_callsign_mode_backspace(void)
 {
-    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING || s_callsign_copy_len == 0U) {
+    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING || s_callsign_play_pending ||
+        s_callsign_copy_len == 0U) {
         return;
     }
 
@@ -423,7 +487,7 @@ const cw_callsign_result_t *cw_callsign_mode_submit(void)
     bool correct;
     uint8_t sent_wpm;
 
-    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING ||
+    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING || s_callsign_play_pending ||
         s_callsign_current_index >= CW_CALLSIGN_ATTEMPT_CALLS ||
         s_callsign_attempt[s_callsign_current_index] == NULL) {
         return &s_callsign_result;
@@ -474,13 +538,13 @@ const cw_callsign_result_t *cw_callsign_mode_submit(void)
     }
 
     cw_callsign_update_view();
-    cw_callsign_play_index(s_callsign_current_index, true);
+    cw_callsign_schedule_or_play_next();
     return &s_callsign_result;
 }
 
 void cw_callsign_mode_replay(void)
 {
-    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING) {
+    if (s_callsign_view.state != CW_CALLSIGN_STATE_COPYING || s_callsign_play_pending) {
         return;
     }
 
