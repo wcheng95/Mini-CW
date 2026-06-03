@@ -150,23 +150,6 @@ static void ui_service_set_text(char *dest, size_t dest_size, const char *text)
     snprintf(dest, dest_size, "%s", text ? text : "");
 }
 
-static void ui_service_copy_fixed_field(char *dest,
-                                        size_t dest_size,
-                                        size_t offset,
-                                        size_t width,
-                                        const char *text)
-{
-    size_t i = 0;
-
-    if (dest == NULL || offset >= dest_size) {
-        return;
-    }
-
-    for (; i < width && offset + i + 1U < dest_size && text != NULL && text[i] != '\0'; ++i) {
-        dest[offset + i] = text[i];
-    }
-}
-
 static int ui_service_clamp_int(int value, int min_value, int max_value)
 {
     if (value < min_value) {
@@ -796,6 +779,26 @@ static void ui_service_format_accuracy_tenths(char *dest, size_t dest_size, uint
     snprintf(dest, dest_size, "%u.%u%%", (unsigned)(tenths / 10U), (unsigned)(tenths % 10U));
 }
 
+static void ui_service_set_bottom_status(mini_cw_screen_t *screen)
+{
+    char status[32];
+
+    if (screen == NULL) {
+        return;
+    }
+
+    snprintf(status,
+             sizeof(status),
+             "TX:%u T:%uHz V:%u",
+             (unsigned)keyer_service_get_tx_wpm(),
+             (unsigned)audio_service_get_tone_hz(),
+             (unsigned)audio_service_get_volume());
+    ui_service_set_text(screen->line[UI_MODE_LINES - 1U],
+                        sizeof(screen->line[UI_MODE_LINES - 1U]),
+                        status);
+    screen->line_color[UI_MODE_LINES - 1U] = MINI_CW_SCREEN_COLOR_WHITE;
+}
+
 static void ui_service_render_lesson_normal(mini_cw_screen_t *screen)
 {
     const cw_lesson_view_t *view = cw_trainer_lesson_get_view();
@@ -1141,8 +1144,6 @@ static void ui_service_render_plaintext_normal(mini_cw_screen_t *screen)
 
 static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
-    unsigned wpm;
-    char wpm_text[3];
     uint8_t row;
 
     if (screen == NULL) {
@@ -1155,27 +1156,6 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
                                              (uint16_t)(s_keyer_history_scroll_top + row));
         screen->line_color[row] = MINI_CW_SCREEN_COLOR_GREEN;
     }
-
-    memset(screen->line[5], ' ', UI_COLS);
-    screen->line[5][UI_COLS] = '\0';
-
-    ui_service_copy_fixed_field(screen->line[5],
-                                sizeof(screen->line[5]),
-                                0U,
-                                8U,
-                                keyer_service_io_mode_label(keyer_service_get_key_in_mode()));
-    ui_service_copy_fixed_field(screen->line[5],
-                                sizeof(screen->line[5]),
-                                9U,
-                                8U,
-                                keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
-
-    wpm = keyer_service_get_key_in_wpm();
-    if (wpm > 99U) {
-        wpm = 99U;
-    }
-    snprintf(wpm_text, sizeof(wpm_text), "%2u", wpm);
-    ui_service_copy_fixed_field(screen->line[5], sizeof(screen->line[5]), 18U, 2U, wpm_text);
 }
 
 static void ui_service_render_system_normal(mini_cw_screen_t *screen)
@@ -1214,6 +1194,7 @@ static void ui_service_render_normal(void)
         ui_service_render_keyer_normal(&screen);
         break;
     }
+    ui_service_set_bottom_status(&screen);
     ui_screen_render(&screen);
 }
 
@@ -1308,8 +1289,16 @@ static void ui_service_render_keyer_menu(void)
                                  "2 Tone:",
                                  audio_service_get_tone_hz(),
                                  "Hz");
-    ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3");
-    ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+    snprintf(screen.line[2],
+             sizeof(screen.line[2]),
+             "3 KeyOut:%s",
+             keyer_service_io_mode_label(keyer_service_get_key_out_mode()));
+    ui_service_format_value_line(screen.line[3],
+                                 sizeof(screen.line[3]),
+                                 4U,
+                                 "4 Out WPM:",
+                                 keyer_service_get_key_out_wpm(),
+                                 "");
     ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
     ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
 
@@ -1457,7 +1446,12 @@ static void ui_service_render_system_menu(void)
              sizeof(screen.line[4]),
              "5 USB Drive:%s",
              storage_usb_drive_is_enabled() ? "ON" : "OFF");
-    ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6 Time");
+    ui_service_format_value_line(screen.line[5],
+                                 sizeof(screen.line[5]),
+                                 6U,
+                                 "6 Tone:",
+                                 audio_service_get_tone_hz(),
+                                 "Hz");
 
     ui_screen_render(&screen);
 }
@@ -1632,6 +1626,8 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
             target = UI_EDIT_VOLUME;
         } else if (item == 3U) {
             target = UI_EDIT_KEY_IN_WPM;
+        } else if (item == 6U) {
+            target = UI_EDIT_TONE_HZ;
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_LESSONS) {
         if (item == 1U) {
@@ -1815,6 +1811,8 @@ static ui_input_event_t ui_service_map_normal_char(char ch)
         event.type = UI_INPUT_EVENT_BACKSPACE;
     } else if (ch == '`' || ch == '\x1B') {
         event.type = UI_INPUT_EVENT_CANCEL;
+    } else if (ch == '+' || ch == '-' || ch == '_' || ch == '[' || ch == ']') {
+        event.type = UI_INPUT_EVENT_NONE;
     } else if (s_ui.mode == UI_SERVICE_MODE_LESSONS && ch >= 32 && ch <= 126) {
         event.type = UI_INPUT_EVENT_CHAR_INPUT;
     } else if (s_ui.mode == UI_SERVICE_MODE_WORDS && ch == '.') {
