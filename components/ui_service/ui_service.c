@@ -2287,6 +2287,25 @@ static bool ui_service_emit_keyer_wpm_delta(char key, ui_input_event_t *out_even
     return true;
 }
 
+static bool ui_service_emit_keyer_mute_toggle(char key, ui_input_event_t *out_event)
+{
+    bool next;
+
+    if (key != '\\') {
+        return false;
+    }
+
+    next = !keyer_service_get_mute();
+    ui_service_keyer_set_status(next ? "Mute:ON" : "Mute:OFF");
+    ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_MUTE_CHANGED, key);
+    if (out_event != NULL) {
+        out_event->setting = UI_SETTING_KEYER_MUTE;
+        out_event->value = next ? 1 : 0;
+        out_event->delta = next ? 1 : -1;
+    }
+    return true;
+}
+
 static bool ui_service_handle_keyer_shortcut_char(char key, ui_input_event_t *out_event)
 {
     if (!s_ui.keyer_shortcut_active || s_ui.mode != UI_SERVICE_MODE_KEYER ||
@@ -2433,6 +2452,10 @@ ui_input_event_t ui_service_poll_input(void)
         ui_input_event_t keyer_event = UI_EVENT_NONE;
 
         if (ui_service_emit_keyer_wpm_delta(port_event.ch, &keyer_event)) {
+            return keyer_event;
+        }
+
+        if (ui_service_emit_keyer_mute_toggle(port_event.ch, &keyer_event)) {
             return keyer_event;
         }
 
