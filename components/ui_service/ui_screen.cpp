@@ -83,6 +83,31 @@ static void ui_screen_format_top_row(char row[UI_COLS + 1], const mini_cw_screen
     }
 }
 
+static void ui_screen_format_effective_top(char row[UI_COLS + 1],
+                                           mini_cw_screen_color_t color[UI_COLS],
+                                           const mini_cw_screen_t *screen)
+{
+    if (screen->top[0] != '\0') {
+        ui_screen_copy_visible(row, screen->top);
+        std::size_t len = std::strlen(row);
+        for (std::size_t i = len; i < UI_COLS; ++i) {
+            row[i] = ' ';
+        }
+        row[UI_COLS] = '\0';
+        for (std::size_t i = 0; i < UI_COLS; ++i) {
+            color[i] = screen->top_color[i] == MINI_CW_SCREEN_COLOR_DEFAULT
+                           ? MINI_CW_SCREEN_COLOR_WHITE
+                           : screen->top_color[i];
+        }
+        return;
+    }
+
+    ui_screen_format_top_row(row, screen);
+    for (std::size_t i = 0; i < UI_COLS; ++i) {
+        color[i] = MINI_CW_SCREEN_COLOR_WHITE;
+    }
+}
+
 static ui_cardputer_port_color_t ui_screen_map_color(mini_cw_screen_color_t color)
 {
     switch (color) {
@@ -108,6 +133,31 @@ static void ui_screen_draw_text_row(int y,
     ui_screen_copy_visible(clipped, text);
     ui_cardputer_port_display_fill_rect(0, y, UI_W, height, bg);
     ui_cardputer_port_display_print_text(0, y + 1, clipped, fg, bg);
+}
+
+static void ui_screen_draw_top_row(const char row[UI_COLS + 1],
+                                   const mini_cw_screen_color_t color[UI_COLS])
+{
+    int run_start = 0;
+
+    ui_cardputer_port_display_fill_rect(0, UI_TOP_Y, UI_W, UI_TOP_H, UI_CARDPUTER_PORT_COLOR_BLACK);
+    while (run_start < UI_COLS) {
+        int run_end = run_start + 1;
+        char text[UI_COLS + 1];
+
+        while (run_end < UI_COLS && color[run_end] == color[run_start]) {
+            ++run_end;
+        }
+
+        std::memcpy(text, &row[run_start], (std::size_t)(run_end - run_start));
+        text[run_end - run_start] = '\0';
+        ui_cardputer_port_display_print_text(run_start * UI_FONT_W,
+                                             UI_TOP_Y + 1,
+                                             text,
+                                             ui_screen_map_color(color[run_start]),
+                                             UI_CARDPUTER_PORT_COLOR_BLACK);
+        run_start = run_end;
+    }
 }
 
 static bool ui_screen_line_changed(const mini_cw_screen_t *screen,
@@ -153,8 +203,10 @@ void ui_screen_render(const mini_cw_screen_t *screen)
 
     char top[UI_COLS + 1];
     char last_top[UI_COLS + 1];
+    mini_cw_screen_color_t top_color[UI_COLS];
+    mini_cw_screen_color_t last_top_color[UI_COLS];
 
-    ui_screen_format_top_row(top, screen);
+    ui_screen_format_effective_top(top, top_color, screen);
 
     ui_cardputer_port_display_begin_frame();
 
@@ -169,16 +221,16 @@ void ui_screen_render(const mini_cw_screen_t *screen)
 
     if (!s_have_last_screen) {
         last_top[0] = '\0';
+        for (int i = 0; i < UI_COLS; ++i) {
+            last_top_color[i] = MINI_CW_SCREEN_COLOR_DEFAULT;
+        }
     } else {
-        ui_screen_format_top_row(last_top, &s_last_screen);
+        ui_screen_format_effective_top(last_top, last_top_color, &s_last_screen);
     }
 
-    if (!s_have_last_screen || std::strcmp(top, last_top) != 0) {
-        ui_screen_draw_text_row(UI_TOP_Y,
-                                UI_TOP_H,
-                                top,
-                                UI_CARDPUTER_PORT_COLOR_WHITE,
-                                UI_CARDPUTER_PORT_COLOR_BLACK);
+    if (!s_have_last_screen || std::strcmp(top, last_top) != 0 ||
+        std::memcmp(top_color, last_top_color, sizeof(top_color)) != 0) {
+        ui_screen_draw_top_row(top, top_color);
     }
 
     for (int line = 0; line < UI_MODE_LINES; ++line) {

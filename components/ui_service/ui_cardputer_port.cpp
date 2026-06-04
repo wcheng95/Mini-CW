@@ -13,6 +13,7 @@
 
 #include "M5Cardputer.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 static const char *TAG = "ui_cardputer_port";
 
@@ -27,6 +28,11 @@ static bool s_last_reported_key_caps_lock = false;
 static bool s_last_reported_fn = false;
 static bool s_last_reported_ctrl = false;
 static bool s_last_reported_opt = false;
+static bool s_last_reported_alt = false;
+static int64_t s_backspace_press_us = 0;
+static bool s_backspace_hold_reported = false;
+
+#define UI_CARDPUTER_BACKSPACE_HOLD_US 1000000LL
 
 static uint16_t ui_cardputer_port_map_color(ui_cardputer_port_color_t color)
 {
@@ -84,6 +90,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     auto &keys = M5Cardputer.Keyboard.keysState();
     char ch = '\0';
+    int64_t now_us = esp_timer_get_time();
 
     out_event->fn = keys.fn;
     out_event->shift = keys.shift;
@@ -91,6 +98,22 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
     out_event->opt = keys.opt;
     out_event->alt = keys.alt;
     out_event->caps_lock = M5Cardputer.Keyboard.capslocked();
+
+    if (keys.del) {
+        if (s_backspace_press_us == 0) {
+            s_backspace_press_us = now_us;
+            s_backspace_hold_reported = false;
+        } else if (!s_backspace_hold_reported &&
+                   now_us - s_backspace_press_us >= UI_CARDPUTER_BACKSPACE_HOLD_US) {
+            s_backspace_hold_reported = true;
+            out_event->type = UI_CARDPUTER_PORT_EVENT_BACKSPACE_HOLD;
+            ESP_LOGI(TAG, "keyboard backspace hold");
+            return true;
+        }
+    } else {
+        s_backspace_press_us = 0;
+        s_backspace_hold_reported = false;
+    }
 
     if (!keys.word.empty()) {
         ch = keys.word.front();
@@ -106,6 +129,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
         s_last_reported_fn = false;
         s_last_reported_ctrl = false;
         s_last_reported_opt = false;
+        s_last_reported_alt = false;
 
         if (ch == s_last_reported_key && keys.fn == s_last_reported_key_fn &&
             keys.shift == s_last_reported_key_shift && keys.ctrl == s_last_reported_key_ctrl &&
@@ -132,6 +156,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
     if (keys.opt) {
         s_last_reported_fn = false;
         s_last_reported_ctrl = false;
+        s_last_reported_alt = false;
 
         if (s_last_reported_opt) {
             return false;
@@ -145,9 +170,27 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     s_last_reported_opt = false;
 
+    if (keys.alt) {
+        s_last_reported_fn = false;
+        s_last_reported_ctrl = false;
+        s_last_reported_opt = false;
+
+        if (s_last_reported_alt) {
+            return false;
+        }
+
+        s_last_reported_alt = true;
+        out_event->type = UI_CARDPUTER_PORT_EVENT_ALT;
+        ESP_LOGI(TAG, "keyboard alt");
+        return true;
+    }
+
+    s_last_reported_alt = false;
+
     if (keys.fn) {
         s_last_reported_ctrl = false;
         s_last_reported_opt = false;
+        s_last_reported_alt = false;
 
         if (s_last_reported_fn) {
             return false;
@@ -163,6 +206,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
 
     if (keys.ctrl) {
         s_last_reported_opt = false;
+        s_last_reported_alt = false;
 
         if (s_last_reported_ctrl) {
             return false;

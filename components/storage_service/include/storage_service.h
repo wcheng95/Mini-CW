@@ -23,7 +23,7 @@ void storage_service_init(void);
 typedef struct {
     uint8_t volume;
     uint16_t tone_hz;
-    keyer_io_mode_t key_in_mode;
+    keyer_key_in_mode_t key_in_mode;
     uint8_t key_in_wpm;
 } storage_system_config_t;
 
@@ -32,6 +32,8 @@ bool storage_profile_save(void);
 bool storage_session_log_append(const char *line);
 bool storage_system_load_config(storage_system_config_t *config);
 bool storage_system_save_config(const storage_system_config_t *config);
+bool storage_keyer_load_config(keyer_config_t *config);
+bool storage_keyer_save_config(const keyer_config_t *config);
 bool storage_lesson_load(cw_lesson_config_t *config, cw_lesson_result_t *result);
 bool storage_lesson_save_config(const cw_lesson_config_t *config);
 bool storage_lesson_save_result(const cw_lesson_result_t *result);

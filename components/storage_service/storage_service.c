@@ -55,6 +55,14 @@ static const char *TAG = "storage_service";
 #define STORAGE_DELAY_S_MAX 5U
 #define STORAGE_PLAINTEXT_WPM_MIN 5U
 #define STORAGE_PLAINTEXT_WPM_MAX 40U
+#define STORAGE_KEYER_TX_DELAY_MIN 1U
+#define STORAGE_KEYER_TX_DELAY_MAX 99U
+#define STORAGE_KEYER_REPEAT_MIN 1U
+#define STORAGE_KEYER_REPEAT_MAX 99U
+#define STORAGE_KEYER_OLD_DEFAULT_M2 "[" "CALL] TU [" "OP] UR [" "599]*2 CA CA BK"
+#define STORAGE_KEYER_OLD_DEFAULT_M5 "BK TU GM UR [" "599]*2 CA CA BK"
+#define STORAGE_KEYER_DEFAULT_M2 "TU UR CA CA BK"
+#define STORAGE_KEYER_DEFAULT_M5 "BK TU GM UR 599 599 CA CA BK"
 
 #define STORAGE_KEY_SYSTEM_VOLUME (1UL << 0)
 #define STORAGE_KEY_SYSTEM_KEY_IN (1UL << 1)
@@ -78,6 +86,15 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_WORD_MAX_WPM (1UL << 19)
 #define STORAGE_KEY_WORD_DELAY_S (1UL << 20)
 #define STORAGE_KEY_CALLSIGN_DELAY_S (1UL << 21)
+#define STORAGE_KEY_KEYER_KEY_OUT (1UL << 22)
+#define STORAGE_KEY_KEYER_PADDLE (1UL << 23)
+#define STORAGE_KEY_KEYER_TX_DELAY (1UL << 24)
+#define STORAGE_KEY_KEYER_REPEAT (1UL << 25)
+#define STORAGE_KEY_KEYER_M1 (1UL << 26)
+#define STORAGE_KEY_KEYER_M2 (1UL << 27)
+#define STORAGE_KEY_KEYER_M3 (1UL << 28)
+#define STORAGE_KEY_KEYER_M4 (1UL << 29)
+#define STORAGE_KEY_KEYER_M5 (1UL << 30)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -95,10 +112,14 @@ static const char *TAG = "storage_service";
      STORAGE_KEY_LESSON_GROUP_LEN | STORAGE_KEY_WORD_SPEED |                        \
      STORAGE_KEY_WORD_MIN_CHAR_WPM | STORAGE_KEY_WORD_LESSON |                      \
      STORAGE_KEY_WORD_MAX_LEN | STORAGE_KEY_WORD_MAX_WPM |                          \
-     STORAGE_KEY_WORD_DELAY_S | STORAGE_KEY_CALLSIGN_SPEED |                        \
-     STORAGE_KEY_CALLSIGN_MIN_CHAR_WPM | STORAGE_KEY_CALLSIGN_MAX_WPM |             \
-     STORAGE_KEY_CALLSIGN_DELAY_S |                                                 \
-     STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
+      STORAGE_KEY_WORD_DELAY_S | STORAGE_KEY_CALLSIGN_SPEED |                        \
+      STORAGE_KEY_CALLSIGN_MIN_CHAR_WPM | STORAGE_KEY_CALLSIGN_MAX_WPM |             \
+      STORAGE_KEY_CALLSIGN_DELAY_S |                                                 \
+      STORAGE_KEY_KEYER_KEY_OUT | STORAGE_KEY_KEYER_PADDLE |                         \
+      STORAGE_KEY_KEYER_TX_DELAY | STORAGE_KEY_KEYER_REPEAT | STORAGE_KEY_KEYER_M1 |  \
+      STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
+      STORAGE_KEY_KEYER_M5 |                                                         \
+      STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
     (STORAGE_SECTION_SYSTEM | STORAGE_SECTION_KEYER | STORAGE_SECTION_LESSONS |      \
@@ -123,6 +144,7 @@ static bool s_tinyusb_installed;
 static bool s_settings_loaded;
 
 static storage_system_config_t s_system_config;
+static keyer_config_t s_keyer_config;
 static cw_lesson_config_t s_lesson_config;
 static cw_word_config_t s_word_config;
 static cw_callsign_config_t s_callsign_config;
@@ -337,6 +359,19 @@ static char *storage_trim(char *text)
     return text;
 }
 
+static void storage_copy_keyer_message(char *destination, const char *source)
+{
+    if (destination == NULL) {
+        return;
+    }
+
+    snprintf(destination,
+             KEYER_MESSAGE_MAX_LEN + 1U,
+             "%.*s",
+             (int)KEYER_MESSAGE_MAX_LEN,
+             source ? source : "");
+}
+
 static void storage_strip_inline_comment(char *line)
 {
     if (line == NULL) {
@@ -400,23 +435,23 @@ static bool storage_parse_bool(const char *value, bool *out_value)
     return false;
 }
 
-static const char *storage_keyer_mode_label(keyer_io_mode_t mode)
+static const char *storage_key_in_mode_label(keyer_key_in_mode_t mode)
 {
     switch (mode) {
-    case KEYER_IO_PADDLE:
-        return "Paddle";
-    case KEYER_IO_PADDLE_R:
-        return "PaddleR";
-    case KEYER_IO_SK:
-        return "SK";
-    case KEYER_IO_SK_MONO:
-        return "SK-Mono";
+    case KEYER_KEY_IN_PADDLE:
+        return "Pdl";
+    case KEYER_KEY_IN_PADDLE_R:
+        return "Pdl-R";
+    case KEYER_KEY_IN_SK_T:
+        return "SK-T";
+    case KEYER_KEY_IN_SK_R:
+        return "SK-R";
     default:
-        return "Paddle";
+        return "Pdl";
     }
 }
 
-static bool storage_parse_keyer_mode(const char *value, keyer_io_mode_t *out_mode)
+static bool storage_parse_key_in_mode(const char *value, keyer_key_in_mode_t *out_mode)
 {
     uint32_t numeric_value;
 
@@ -424,32 +459,127 @@ static bool storage_parse_keyer_mode(const char *value, keyer_io_mode_t *out_mod
         return false;
     }
 
-    if (storage_str_equal_ignore_case(value, "Paddle")) {
-        *out_mode = KEYER_IO_PADDLE;
+    if (storage_str_equal_ignore_case(value, "Pdl") ||
+        storage_str_equal_ignore_case(value, "Paddle")) {
+        *out_mode = KEYER_KEY_IN_PADDLE;
         return true;
     }
 
-    if (storage_str_equal_ignore_case(value, "PaddleR") ||
+    if (storage_str_equal_ignore_case(value, "Pdl-R") ||
+        storage_str_equal_ignore_case(value, "PdlR") ||
+        storage_str_equal_ignore_case(value, "PaddleR") ||
         storage_str_equal_ignore_case(value, "Paddle-R") ||
         storage_str_equal_ignore_case(value, "Paddle_R")) {
-        *out_mode = KEYER_IO_PADDLE_R;
+        *out_mode = KEYER_KEY_IN_PADDLE_R;
+        return true;
+    }
+
+    if (storage_str_equal_ignore_case(value, "SK-T") ||
+        storage_str_equal_ignore_case(value, "SKT") ||
+        storage_str_equal_ignore_case(value, "SK")) {
+        *out_mode = KEYER_KEY_IN_SK_T;
+        return true;
+    }
+
+    if (storage_str_equal_ignore_case(value, "SK-R") ||
+        storage_str_equal_ignore_case(value, "SKR") ||
+        storage_str_equal_ignore_case(value, "SK-Mono") ||
+        storage_str_equal_ignore_case(value, "SK_Mono") ||
+        storage_str_equal_ignore_case(value, "SKMono")) {
+        *out_mode = KEYER_KEY_IN_SK_R;
+        return true;
+    }
+
+    if (storage_parse_u32(value, &numeric_value) && numeric_value <= (uint32_t)KEYER_KEY_IN_SK_R) {
+        *out_mode = (keyer_key_in_mode_t)numeric_value;
+        return true;
+    }
+
+    return false;
+}
+
+static const char *storage_key_out_mode_label(keyer_key_out_mode_t mode)
+{
+    return keyer_service_key_out_mode_label(mode);
+}
+
+static bool storage_parse_key_out_mode(const char *value, keyer_key_out_mode_t *out_mode)
+{
+    uint32_t numeric_value;
+
+    if (value == NULL || out_mode == NULL) {
+        return false;
+    }
+
+    if (storage_str_equal_ignore_case(value, "Pdl") ||
+        storage_str_equal_ignore_case(value, "Paddle")) {
+        *out_mode = KEYER_KEY_OUT_PADDLE;
+        return true;
+    }
+
+    if (storage_str_equal_ignore_case(value, "Pdl-R") ||
+        storage_str_equal_ignore_case(value, "PdlR") ||
+        storage_str_equal_ignore_case(value, "PaddleR") ||
+        storage_str_equal_ignore_case(value, "Paddle-R") ||
+        storage_str_equal_ignore_case(value, "Paddle_R")) {
+        *out_mode = KEYER_KEY_OUT_PADDLE_R;
         return true;
     }
 
     if (storage_str_equal_ignore_case(value, "SK")) {
-        *out_mode = KEYER_IO_SK;
+        *out_mode = KEYER_KEY_OUT_SK;
         return true;
     }
 
-    if (storage_str_equal_ignore_case(value, "SK-Mono") ||
-        storage_str_equal_ignore_case(value, "SK_Mono") ||
+    if (storage_str_equal_ignore_case(value, "SK-M") ||
+        storage_str_equal_ignore_case(value, "SKM") ||
+        storage_str_equal_ignore_case(value, "SK-Mono") ||
         storage_str_equal_ignore_case(value, "SKMono")) {
-        *out_mode = KEYER_IO_SK_MONO;
+        *out_mode = KEYER_KEY_OUT_SK_M;
         return true;
     }
 
-    if (storage_parse_u32(value, &numeric_value) && numeric_value <= (uint32_t)KEYER_IO_SK_MONO) {
-        *out_mode = (keyer_io_mode_t)numeric_value;
+    if (storage_str_equal_ignore_case(value, "OFF")) {
+        *out_mode = KEYER_KEY_OUT_OFF;
+        return true;
+    }
+
+    if (storage_parse_u32(value, &numeric_value) &&
+        numeric_value <= (uint32_t)KEYER_KEY_OUT_OFF) {
+        *out_mode = (keyer_key_out_mode_t)numeric_value;
+        return true;
+    }
+
+    return false;
+}
+
+static bool storage_parse_paddle_mode(const char *value, keyer_paddle_mode_t *out_mode)
+{
+    uint32_t numeric_value;
+
+    if (value == NULL || out_mode == NULL) {
+        return false;
+    }
+
+    if (storage_str_equal_ignore_case(value, "IambicA") ||
+        storage_str_equal_ignore_case(value, "Iambic-A")) {
+        *out_mode = KEYER_PADDLE_IAMBIC_A;
+        return true;
+    }
+
+    if (storage_str_equal_ignore_case(value, "IambicB") ||
+        storage_str_equal_ignore_case(value, "Iambic-B")) {
+        *out_mode = KEYER_PADDLE_IAMBIC_B;
+        return true;
+    }
+
+    if (storage_str_equal_ignore_case(value, "Bug")) {
+        *out_mode = KEYER_PADDLE_BUG;
+        return true;
+    }
+
+    if (storage_parse_u32(value, &numeric_value) && numeric_value <= (uint32_t)KEYER_PADDLE_BUG) {
+        *out_mode = (keyer_paddle_mode_t)numeric_value;
         return true;
     }
 
@@ -461,8 +591,22 @@ static void storage_settings_set_defaults(void)
     s_system_config = (storage_system_config_t){
         .volume = 40,
         .tone_hz = 700,
-        .key_in_mode = KEYER_IO_PADDLE,
-        .key_in_wpm = 20,
+        .key_in_mode = KEYER_KEY_IN_PADDLE,
+        .key_in_wpm = 19,
+    };
+
+    s_keyer_config = (keyer_config_t){
+        .key_out_mode = KEYER_KEY_OUT_PADDLE,
+        .paddle_mode = KEYER_PADDLE_IAMBIC_B,
+        .tx_delay_s = 1,
+        .repeat_interval_s = 6,
+        .message = {
+            "CQ SOTA DE AG6AQ",
+            STORAGE_KEYER_DEFAULT_M2,
+            "BK TU 72 DE AG6AQ E E",
+            "AG6AQ",
+            STORAGE_KEYER_DEFAULT_M5,
+        },
     };
 
     s_lesson_config = (cw_lesson_config_t){
@@ -502,7 +646,7 @@ static void storage_normalize_system_config(bool *changed)
     uint16_t normalized_tone_hz = s_system_config.tone_hz;
     uint8_t normalized_wpm =
         storage_clamp_u8(s_system_config.key_in_wpm, STORAGE_KEY_WPM_MIN, STORAGE_KEY_WPM_MAX);
-    keyer_io_mode_t normalized_mode = s_system_config.key_in_mode;
+    keyer_key_in_mode_t normalized_mode = s_system_config.key_in_mode;
 
     if (normalized_tone_hz < STORAGE_TONE_HZ_MIN) {
         normalized_tone_hz = STORAGE_TONE_HZ_MIN;
@@ -510,9 +654,9 @@ static void storage_normalize_system_config(bool *changed)
         normalized_tone_hz = STORAGE_TONE_HZ_MAX;
     }
 
-    if ((int)normalized_mode < (int)KEYER_IO_PADDLE ||
-        (int)normalized_mode > (int)KEYER_IO_SK_MONO) {
-        normalized_mode = KEYER_IO_PADDLE;
+    if ((int)normalized_mode < (int)KEYER_KEY_IN_PADDLE ||
+        (int)normalized_mode > (int)KEYER_KEY_IN_SK_R) {
+        normalized_mode = KEYER_KEY_IN_PADDLE;
     }
 
     if (normalized_volume != s_system_config.volume ||
@@ -528,6 +672,45 @@ static void storage_normalize_system_config(bool *changed)
     s_system_config.tone_hz = normalized_tone_hz;
     s_system_config.key_in_wpm = normalized_wpm;
     s_system_config.key_in_mode = normalized_mode;
+}
+
+static void storage_normalize_keyer_config(bool *changed)
+{
+    keyer_config_t before = s_keyer_config;
+
+    if ((int)s_keyer_config.key_out_mode < (int)KEYER_KEY_OUT_PADDLE ||
+        (int)s_keyer_config.key_out_mode > (int)KEYER_KEY_OUT_OFF) {
+        s_keyer_config.key_out_mode = KEYER_KEY_OUT_PADDLE;
+    }
+
+    if ((int)s_keyer_config.paddle_mode < (int)KEYER_PADDLE_IAMBIC_A ||
+        (int)s_keyer_config.paddle_mode > (int)KEYER_PADDLE_BUG) {
+        s_keyer_config.paddle_mode = KEYER_PADDLE_IAMBIC_B;
+    }
+
+    s_keyer_config.tx_delay_s =
+        storage_clamp_u8(s_keyer_config.tx_delay_s,
+                         STORAGE_KEYER_TX_DELAY_MIN,
+                         STORAGE_KEYER_TX_DELAY_MAX);
+    s_keyer_config.repeat_interval_s =
+        storage_clamp_u8(s_keyer_config.repeat_interval_s,
+                         STORAGE_KEYER_REPEAT_MIN,
+                         STORAGE_KEYER_REPEAT_MAX);
+
+    for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
+        s_keyer_config.message[i][KEYER_MESSAGE_MAX_LEN] = '\0';
+    }
+
+    if (strcmp(s_keyer_config.message[1], STORAGE_KEYER_OLD_DEFAULT_M2) == 0) {
+        storage_copy_keyer_message(s_keyer_config.message[1], STORAGE_KEYER_DEFAULT_M2);
+    }
+    if (strcmp(s_keyer_config.message[4], STORAGE_KEYER_OLD_DEFAULT_M5) == 0) {
+        storage_copy_keyer_message(s_keyer_config.message[4], STORAGE_KEYER_DEFAULT_M5);
+    }
+
+    if (memcmp(&before, &s_keyer_config, sizeof(before)) != 0 && changed != NULL) {
+        *changed = true;
+    }
 }
 
 static void storage_normalize_lesson_config(bool *changed)
@@ -644,6 +827,7 @@ static void storage_normalize_plaintext_config(bool *changed)
 static void storage_normalize_all_settings(bool *changed)
 {
     storage_normalize_system_config(changed);
+    storage_normalize_keyer_config(changed);
     storage_normalize_lesson_config(changed);
     storage_normalize_word_config(changed);
     storage_normalize_callsign_config(changed);
@@ -768,7 +952,9 @@ static void storage_apply_setting(storage_setting_section_t section,
                                   bool *changed)
 {
     bool usb_drive_requested = false;
-    keyer_io_mode_t keyer_mode;
+    keyer_key_in_mode_t key_in_mode;
+    keyer_key_out_mode_t key_out_mode;
+    keyer_paddle_mode_t paddle_mode;
 
     if (key == NULL || value == NULL || seen_keys == NULL) {
         return;
@@ -788,8 +974,8 @@ static void storage_apply_setting(storage_setting_section_t section,
             (void)storage_apply_u16_setting(value, &s_system_config.tone_hz, changed);
         } else if (storage_str_equal_ignore_case(key, "key_in")) {
             *seen_keys |= STORAGE_KEY_SYSTEM_KEY_IN;
-            if (storage_parse_keyer_mode(value, &keyer_mode)) {
-                s_system_config.key_in_mode = keyer_mode;
+            if (storage_parse_key_in_mode(value, &key_in_mode)) {
+                s_system_config.key_in_mode = key_in_mode;
             } else if (changed != NULL) {
                 *changed = true;
             }
@@ -807,6 +993,53 @@ static void storage_apply_setting(storage_setting_section_t section,
                     *changed = true;
                 }
             }
+        }
+        break;
+
+    case STORAGE_SETTING_SECTION_KEYER:
+        if (storage_str_equal_ignore_case(key, "key_out")) {
+            *seen_keys |= STORAGE_KEY_KEYER_KEY_OUT;
+            if (storage_parse_key_out_mode(value, &key_out_mode)) {
+                s_keyer_config.key_out_mode = key_out_mode;
+            } else if (changed != NULL) {
+                *changed = true;
+            }
+        } else if (storage_str_equal_ignore_case(key, "paddle")) {
+            *seen_keys |= STORAGE_KEY_KEYER_PADDLE;
+            if (storage_parse_paddle_mode(value, &paddle_mode)) {
+                s_keyer_config.paddle_mode = paddle_mode;
+            } else if (changed != NULL) {
+                *changed = true;
+            }
+        } else if (storage_str_equal_ignore_case(key, "tx_delay_s")) {
+            *seen_keys |= STORAGE_KEY_KEYER_TX_DELAY;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_KEYER_TX_DELAY_MIN,
+                                           STORAGE_KEYER_TX_DELAY_MAX,
+                                           &s_keyer_config.tx_delay_s,
+                                           changed);
+        } else if (storage_str_equal_ignore_case(key, "repeat_interval_s")) {
+            *seen_keys |= STORAGE_KEY_KEYER_REPEAT;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_KEYER_REPEAT_MIN,
+                                           STORAGE_KEYER_REPEAT_MAX,
+                                           &s_keyer_config.repeat_interval_s,
+                                           changed);
+        } else if (storage_str_equal_ignore_case(key, "m1")) {
+            *seen_keys |= STORAGE_KEY_KEYER_M1;
+            storage_copy_keyer_message(s_keyer_config.message[0], value);
+        } else if (storage_str_equal_ignore_case(key, "m2")) {
+            *seen_keys |= STORAGE_KEY_KEYER_M2;
+            storage_copy_keyer_message(s_keyer_config.message[1], value);
+        } else if (storage_str_equal_ignore_case(key, "m3")) {
+            *seen_keys |= STORAGE_KEY_KEYER_M3;
+            storage_copy_keyer_message(s_keyer_config.message[2], value);
+        } else if (storage_str_equal_ignore_case(key, "m4")) {
+            *seen_keys |= STORAGE_KEY_KEYER_M4;
+            storage_copy_keyer_message(s_keyer_config.message[3], value);
+        } else if (storage_str_equal_ignore_case(key, "m5")) {
+            *seen_keys |= STORAGE_KEY_KEYER_M5;
+            storage_copy_keyer_message(s_keyer_config.message[4], value);
         }
         break;
 
@@ -941,7 +1174,6 @@ static void storage_apply_setting(storage_setting_section_t section,
         }
         break;
 
-    case STORAGE_SETTING_SECTION_KEYER:
     case STORAGE_SETTING_SECTION_NONE:
     case STORAGE_SETTING_SECTION_UNKNOWN:
     default:
@@ -1003,7 +1235,15 @@ static bool storage_write_settings_file(void)
                            "usb_drive=off\n"
                            "\n"
                            "[keyer]\n"
-                           "# no local settings yet\n"
+                           "key_out=%s\n"
+                           "paddle=%s\n"
+                           "tx_delay_s=%u\n"
+                           "repeat_interval_s=%u\n"
+                           "m1=%s\n"
+                           "m2=%s\n"
+                           "m3=%s\n"
+                           "m4=%s\n"
+                           "m5=%s\n"
                            "\n"
                            "[lessons]\n"
                            "lesson=%u\n"
@@ -1031,8 +1271,17 @@ static bool storage_write_settings_file(void)
                            "effective_wpm=%u\n",
                            (unsigned)s_system_config.volume,
                            (unsigned)s_system_config.tone_hz,
-                           storage_keyer_mode_label(s_system_config.key_in_mode),
+                           storage_key_in_mode_label(s_system_config.key_in_mode),
                            (unsigned)s_system_config.key_in_wpm,
+                           storage_key_out_mode_label(s_keyer_config.key_out_mode),
+                           keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
+                           (unsigned)s_keyer_config.tx_delay_s,
+                           (unsigned)s_keyer_config.repeat_interval_s,
+                           s_keyer_config.message[0],
+                           s_keyer_config.message[1],
+                           s_keyer_config.message[2],
+                           s_keyer_config.message[3],
+                           s_keyer_config.message[4],
                            (unsigned)s_lesson_config.lesson,
                            (unsigned)s_lesson_config.duration_min,
                            (unsigned)s_lesson_config.code_wpm,
@@ -1279,6 +1528,40 @@ bool storage_system_save_config(const storage_system_config_t *config)
     s_system_config = *config;
     s_settings_loaded = true;
     storage_normalize_system_config(NULL);
+    return storage_write_settings_file();
+}
+
+bool storage_keyer_load_config(keyer_config_t *config)
+{
+    if (!storage_firmware_can_access_fatfs("keyer config load")) {
+        return false;
+    }
+
+    if (!s_settings_loaded || config == NULL) {
+        return false;
+    }
+
+    *config = s_keyer_config;
+    return true;
+}
+
+bool storage_keyer_save_config(const keyer_config_t *config)
+{
+    if (!storage_firmware_can_access_fatfs("keyer config save")) {
+        return false;
+    }
+
+    if (config == NULL) {
+        return false;
+    }
+
+    if (!s_settings_loaded) {
+        storage_settings_set_defaults();
+    }
+
+    s_keyer_config = *config;
+    s_settings_loaded = true;
+    storage_normalize_keyer_config(NULL);
     return storage_write_settings_file();
 }
 

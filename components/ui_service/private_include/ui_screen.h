@@ -48,6 +48,8 @@ typedef enum {
 typedef struct {
     char mode[UI_TOP_MODE_W + 1];
     char top_right[UI_COLS + 1];
+    char top[UI_COLS + 1];
+    mini_cw_screen_color_t top_color[UI_COLS];
 
     char line[UI_MODE_LINES][UI_COLS + 1];
     mini_cw_screen_color_t line_color[UI_MODE_LINES];

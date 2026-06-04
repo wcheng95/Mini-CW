@@ -33,6 +33,13 @@ typedef enum {
     UI_INPUT_EVENT_USB_DRIVE_CHANGED,
     UI_INPUT_EVENT_REPLAY,
     UI_INPUT_EVENT_SLEEP_REQUEST,
+    UI_INPUT_EVENT_KEY_OUT_MODE_CHANGED,
+    UI_INPUT_EVENT_KEYER_PADDLE_MODE_CHANGED,
+    UI_INPUT_EVENT_KEYER_CONFIG_CHANGED,
+    UI_INPUT_EVENT_KEYER_MUTE_CHANGED,
+    UI_INPUT_EVENT_KEYER_MACRO_SELECTED,
+    UI_INPUT_EVENT_KEYER_SHORTCUT_CHANGED,
+    UI_INPUT_EVENT_KEYER_CLEAR,
 } ui_input_event_type_t;
 
 typedef enum {
@@ -59,7 +66,19 @@ typedef enum {
     UI_SETTING_PLAINTEXT_CODE_WPM,
     UI_SETTING_PLAINTEXT_EFFECTIVE_WPM,
     UI_SETTING_USB_DRIVE,
+    UI_SETTING_KEY_OUT_MODE,
+    UI_SETTING_KEYER_PADDLE_MODE,
+    UI_SETTING_KEYER_TX_DELAY_S,
+    UI_SETTING_KEYER_REPEAT_INTERVAL_S,
+    UI_SETTING_KEYER_MESSAGE_1,
+    UI_SETTING_KEYER_MESSAGE_2,
+    UI_SETTING_KEYER_MESSAGE_3,
+    UI_SETTING_KEYER_MESSAGE_4,
+    UI_SETTING_KEYER_MESSAGE_5,
+    UI_SETTING_KEYER_MUTE,
 } ui_setting_target_t;
+
+#define UI_INPUT_EVENT_TEXT_MAX 127U
 
 typedef struct {
     ui_input_event_type_t type;
@@ -67,6 +86,7 @@ typedef struct {
     ui_setting_target_t setting;
     int value;
     int delta;
+    char text[UI_INPUT_EVENT_TEXT_MAX + 1U];
 } ui_input_event_t;
 
 typedef enum {
@@ -88,6 +108,10 @@ ui_input_event_t ui_service_poll_input(void);
 void ui_service_keyer_append_decoded_char(char ch);
 void ui_service_keyer_backspace_decoded(void);
 void ui_service_keyer_clear_decoded(void);
+void ui_service_keyer_set_tx_text(const char *text);
+void ui_service_keyer_clear_tx_text(void);
+void ui_service_keyer_set_status(const char *text);
+bool ui_service_keyer_shortcut_active(void);
 
 #ifdef __cplusplus
 }
