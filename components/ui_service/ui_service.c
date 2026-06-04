@@ -125,7 +125,8 @@ static bool s_cardputer_ready;
 #define UI_WPM_STEP 1
 #define UI_DELAY_S_MIN 0
 #define UI_DELAY_S_MAX 5
-#define UI_KEYER_DELAY_S_MIN 1
+#define UI_KEYER_TX_DELAY_S_MIN 0
+#define UI_KEYER_REPEAT_S_MIN 1
 #define UI_KEYER_DELAY_S_MAX 99
 #define UI_KEYER_VISIBLE_LINES 5U
 #define UI_KEYER_HISTORY_LINES 64U
@@ -471,8 +472,9 @@ static int ui_service_edit_min(ui_edit_target_t target)
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
         return UI_WPM_MIN;
     case UI_EDIT_KEYER_TX_DELAY_S:
+        return UI_KEYER_TX_DELAY_S_MIN;
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
-        return UI_KEYER_DELAY_S_MIN;
+        return UI_KEYER_REPEAT_S_MIN;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -1010,49 +1012,6 @@ static void ui_service_format_value_line(char *dest,
     }
 }
 
-static const char *ui_service_shortcut_edit_prefix(ui_edit_target_t target)
-{
-    switch (target) {
-    case UI_EDIT_VOLUME:
-        return "Vol:";
-    case UI_EDIT_KEY_IN_WPM:
-        return "Wpm:";
-    case UI_EDIT_TONE_HZ:
-        return "Tone:";
-    case UI_EDIT_KEYER_TX_DELAY_S:
-        return "txDelay:";
-    case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
-        return "RepeatInt:";
-    case UI_EDIT_NONE:
-    default:
-        return "";
-    }
-}
-
-static void ui_service_format_shortcut_edit_line(char *dest, size_t dest_size)
-{
-    const char *prefix;
-    const char *suffix = "";
-
-    if (dest == NULL || dest_size == 0U || s_ui.edit_target == UI_EDIT_NONE) {
-        return;
-    }
-
-    prefix = ui_service_shortcut_edit_prefix(s_ui.edit_target);
-    if (s_ui.edit_target == UI_EDIT_TONE_HZ) {
-        suffix = "Hz";
-    } else if (s_ui.edit_target == UI_EDIT_KEYER_TX_DELAY_S ||
-               s_ui.edit_target == UI_EDIT_KEYER_REPEAT_INTERVAL_S) {
-        suffix = "s";
-    }
-
-    if (s_ui.edit_buf[0] == '\0') {
-        snprintf(dest, dest_size, "%s_%s", prefix, suffix);
-    } else {
-        snprintf(dest, dest_size, "%s%s%s_", prefix, s_ui.edit_buf, suffix);
-    }
-}
-
 static void ui_service_copy_tail(char *dest, size_t dest_size, const char *text, size_t text_len)
 {
     size_t start = 0;
@@ -1450,7 +1409,6 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
     uint8_t row;
     char label[8];
     char wpm[4];
-    char edit_line[UI_COLS + 1];
     const char *line6 = s_keyer_tx_text;
 
     if (screen == NULL) {
@@ -1484,10 +1442,7 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
         }
     }
 
-    if (s_ui.keyer_shortcut_active && s_ui.edit_target != UI_EDIT_NONE) {
-        ui_service_format_shortcut_edit_line(edit_line, sizeof(edit_line));
-        line6 = edit_line;
-    } else if (s_keyer_status_text[0] != '\0') {
+    if (s_keyer_status_text[0] != '\0') {
         if (!ui_service_tick_reached(xTaskGetTickCount(), s_keyer_status_until_tick)) {
             line6 = s_keyer_status_text;
         } else {
@@ -2333,15 +2288,9 @@ static bool ui_service_emit_keyer_wpm_delta(char key, ui_input_event_t *out_even
 
 static bool ui_service_handle_keyer_shortcut_char(char key, ui_input_event_t *out_event)
 {
-    char upper = (char)toupper((unsigned char)key);
-
     if (!s_ui.keyer_shortcut_active || s_ui.mode != UI_SERVICE_MODE_KEYER ||
         s_ui.view != UI_VIEW_NORMAL) {
         return false;
-    }
-
-    if (ui_service_handle_edit_char(key, out_event)) {
-        return true;
     }
 
     if (key >= '1' && key <= '5') {
@@ -2353,55 +2302,6 @@ static bool ui_service_handle_keyer_shortcut_char(char key, ui_input_event_t *ou
             out_event->value = index;
         }
         return true;
-    }
-
-    switch (upper) {
-    case 'V':
-        ui_service_begin_numeric_edit(0U, UI_EDIT_VOLUME);
-        return true;
-    case 'M':
-        ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_MUTE_CHANGED, key);
-        if (out_event != NULL) {
-            out_event->setting = UI_SETTING_KEYER_MUTE;
-            out_event->value = keyer_service_get_mute() ? 0 : 1;
-            out_event->delta = keyer_service_get_mute() ? -1 : 1;
-        }
-        return true;
-    case 'W':
-        ui_service_begin_numeric_edit(0U, UI_EDIT_KEY_IN_WPM);
-        return true;
-    case 'T':
-        ui_service_begin_numeric_edit(0U, UI_EDIT_TONE_HZ);
-        return true;
-    case 'I':
-        ui_service_set_event(out_event, UI_INPUT_EVENT_KEY_IN_MODE_CHANGED, key);
-        if (out_event != NULL) {
-            out_event->setting = UI_SETTING_KEY_IN_MODE;
-            out_event->delta = 1;
-        }
-        return true;
-    case 'O':
-        ui_service_set_event(out_event, UI_INPUT_EVENT_KEY_OUT_MODE_CHANGED, key);
-        if (out_event != NULL) {
-            out_event->setting = UI_SETTING_KEY_OUT_MODE;
-            out_event->delta = 1;
-        }
-        return true;
-    case 'D':
-        ui_service_begin_numeric_edit(0U, UI_EDIT_KEYER_TX_DELAY_S);
-        return true;
-    case 'P':
-        ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_PADDLE_MODE_CHANGED, key);
-        if (out_event != NULL) {
-            out_event->setting = UI_SETTING_KEYER_PADDLE_MODE;
-            out_event->delta = 1;
-        }
-        return true;
-    case 'R':
-        ui_service_begin_numeric_edit(0U, UI_EDIT_KEYER_REPEAT_INTERVAL_S);
-        return true;
-    default:
-        break;
     }
 
     return false;

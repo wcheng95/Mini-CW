@@ -39,7 +39,7 @@ static const char *TAG = "keyer_service";
 #define KEYER_GPIO_INACTIVE_LEVEL 1
 #define KEYER_EVENT_RING_CAP 16U
 #define KEYER_TX_TEXT_MAX 255U
-#define KEYER_TX_DELAY_MIN_S 1U
+#define KEYER_TX_DELAY_MIN_S 0U
 #define KEYER_TX_DELAY_MAX_S 99U
 #define KEYER_REPEAT_MIN_S 1U
 #define KEYER_REPEAT_MAX_S 99U
