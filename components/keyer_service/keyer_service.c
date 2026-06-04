@@ -825,8 +825,6 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
     TickType_t now = xTaskGetTickCount();
     keyer_element_t next;
 
-    keyer_stop_straight_tone();
-
     if (mode == KEYER_KEY_IN_PADDLE_R) {
         dit_pressed = ring_pressed;
         dah_pressed = tip_pressed;
@@ -839,6 +837,8 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
         keyer_update_bug_mode(dit_pressed, dah_pressed, tip_pressed, ring_pressed);
         return;
     }
+
+    keyer_stop_straight_tone();
 
     keyer_update_iambic_memory(dit_pressed, dah_pressed, now);
 
