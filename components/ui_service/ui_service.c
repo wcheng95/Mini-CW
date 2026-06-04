@@ -204,30 +204,25 @@ static void ui_service_set_top_chars(mini_cw_screen_t *screen,
     }
 }
 
-static void ui_service_set_top_span(mini_cw_screen_t *screen,
-                                    uint8_t start,
-                                    uint8_t width,
-                                    const char *text,
-                                    mini_cw_screen_color_t color)
+static void ui_service_copy_right_aligned_field(char *dest, size_t width, const char *text)
 {
-    uint8_t i;
+    size_t len;
 
-    if (screen == NULL || start >= UI_COLS) {
+    if (dest == NULL || width == 0U) {
         return;
     }
 
-    if (start + width > UI_COLS) {
-        width = (uint8_t)(UI_COLS - start);
+    memset(dest, ' ', width);
+    if (text == NULL) {
+        return;
     }
 
-    for (i = 0U; i < width; ++i) {
-        char ch = ' ';
-        if (text != NULL && text[i] != '\0') {
-            ch = text[i];
-        }
-        screen->top[start + i] = ch;
-        screen->top_color[start + i] = color;
+    len = strlen(text);
+    if (len > width) {
+        len = width;
     }
+
+    memcpy(dest + width - len, text, len);
 }
 
 static int ui_service_clamp_int(int value, int min_value, int max_value)
@@ -1407,22 +1402,28 @@ static void ui_service_render_plaintext_normal(mini_cw_screen_t *screen)
 static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
     uint8_t row;
-    char label[8];
-    char wpm[4];
+    char top[UI_COLS + 1];
     const char *line6 = s_keyer_tx_text;
+    const char *key_in = keyer_service_key_in_mode_label(keyer_service_get_key_in_mode());
+    const char *key_out = keyer_service_key_out_mode_label(keyer_service_get_key_out_mode());
+    uint8_t wpm = keyer_service_get_key_in_wpm();
 
     if (screen == NULL) {
         return;
     }
 
-    ui_service_set_top_chars(screen, "", MINI_CW_SCREEN_COLOR_WHITE);
-    ui_service_set_top_span(screen, 0U, 5U, "Keyer", MINI_CW_SCREEN_COLOR_WHITE);
-    snprintf(label, sizeof(label), "%s", keyer_service_key_in_mode_label(keyer_service_get_key_in_mode()));
-    ui_service_set_top_span(screen, 6U, 5U, label, MINI_CW_SCREEN_COLOR_GREEN);
-    snprintf(label, sizeof(label), "%s", keyer_service_key_out_mode_label(keyer_service_get_key_out_mode()));
-    ui_service_set_top_span(screen, 12U, 5U, label, MINI_CW_SCREEN_COLOR_CYAN);
-    snprintf(wpm, sizeof(wpm), "%2u", (unsigned)keyer_service_get_key_in_wpm());
-    ui_service_set_top_span(screen, 18U, 2U, wpm, MINI_CW_SCREEN_COLOR_WHITE);
+    if (wpm > 99U) {
+        wpm = 99U;
+    }
+
+    memset(top, ' ', UI_COLS);
+    memcpy(top, "Keyer", 5U);
+    ui_service_copy_right_aligned_field(&top[6], 5U, key_in);
+    ui_service_copy_right_aligned_field(&top[12], 5U, key_out);
+    top[18] = wpm >= 10U ? (char)('0' + (wpm / 10U)) : ' ';
+    top[19] = (char)('0' + (wpm % 10U));
+    top[UI_COLS] = '\0';
+    ui_service_set_top_chars(screen, top, MINI_CW_SCREEN_COLOR_WHITE);
 
     if (s_ui.keyer_shortcut_active) {
         for (row = 0U; row < UI_KEYER_VISIBLE_LINES; ++row) {
