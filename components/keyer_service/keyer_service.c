@@ -85,6 +85,8 @@ static bool s_mode_b_extra_pending;
 static bool s_key_out_element_active;
 static TickType_t s_key_out_release_tick;
 static bool s_bug_dah_down;
+static bool s_cancel_ignore_tip;
+static bool s_cancel_ignore_ring;
 static keyer_decoder_t s_paddle_decoder;
 static TickType_t s_decoder_last_element_end_tick;
 static bool s_decoder_char_finalized;
@@ -367,6 +369,95 @@ static void keyer_push_event(keyer_event_type_t type, char decoded_char, uint16_
     ++s_event_count;
 }
 
+static bool keyer_tx_playback_active(void)
+{
+    return s_tx_state != KEYER_TX_IDLE;
+}
+
+static void keyer_filter_cancel_ignored_inputs(bool *tip_pressed, bool *ring_pressed)
+{
+    if (tip_pressed != NULL && s_cancel_ignore_tip) {
+        if (*tip_pressed) {
+            *tip_pressed = false;
+        } else {
+            s_cancel_ignore_tip = false;
+        }
+    }
+
+    if (ring_pressed != NULL && s_cancel_ignore_ring) {
+        if (*ring_pressed) {
+            *ring_pressed = false;
+        } else {
+            s_cancel_ignore_ring = false;
+        }
+    }
+}
+
+static void keyer_ignore_physical_paddle_until_release(keyer_element_t element,
+                                                       keyer_key_in_mode_t mode,
+                                                       bool tip_pressed,
+                                                       bool ring_pressed)
+{
+    bool dit_on_tip = mode != KEYER_KEY_IN_PADDLE_R;
+
+    if (element == KEYER_ELEMENT_DIT) {
+        if (dit_on_tip && tip_pressed) {
+            s_cancel_ignore_tip = true;
+        } else if (!dit_on_tip && ring_pressed) {
+            s_cancel_ignore_ring = true;
+        }
+    } else if (element == KEYER_ELEMENT_DAH) {
+        if (dit_on_tip && ring_pressed) {
+            s_cancel_ignore_ring = true;
+        } else if (!dit_on_tip && tip_pressed) {
+            s_cancel_ignore_tip = true;
+        }
+    }
+}
+
+static bool keyer_cancel_tx_with_paddle_element(keyer_element_t element,
+                                                keyer_key_in_mode_t mode,
+                                                bool tip_pressed,
+                                                bool ring_pressed)
+{
+    uint16_t unit_ms = keyer_dit_ms();
+    keyer_event_type_t event_type;
+    char event_char;
+    uint16_t duration_ms;
+
+    if (!keyer_tx_playback_active() || element == KEYER_ELEMENT_NONE) {
+        return false;
+    }
+
+    /* The physical element that cancels active text TX is consumed here: no keyOut,
+     * sidetone, or decoder append is produced for this press. */
+    keyer_stop_tx_playback(true);
+    keyer_ignore_physical_paddle_until_release(element, mode, tip_pressed, ring_pressed);
+
+    event_type = element == KEYER_ELEMENT_DIT ? KEYER_EVENT_DIT : KEYER_EVENT_DAH;
+    event_char = element == KEYER_ELEMENT_DIT ? '.' : '-';
+    duration_ms = element == KEYER_ELEMENT_DIT ? unit_ms : (uint16_t)(3U * unit_ms);
+    keyer_push_event(event_type, event_char, duration_ms);
+    return true;
+}
+
+static bool keyer_cancel_tx_with_straight_key(bool tip_source)
+{
+    if (!keyer_tx_playback_active()) {
+        return false;
+    }
+
+    /* Straight-key cancel is consumed until the physical key is released. */
+    keyer_stop_tx_playback(true);
+    if (tip_source) {
+        s_cancel_ignore_tip = true;
+    } else {
+        s_cancel_ignore_ring = true;
+    }
+    keyer_push_event(KEYER_EVENT_DIT, '.', 0U);
+    return true;
+}
+
 static void keyer_reset_paddle_decoder_state(void)
 {
     keyer_decoder_reset(&s_paddle_decoder);
@@ -451,6 +542,8 @@ static void keyer_reset_input_state(void)
     keyer_reset_paddle_decoder_state();
     keyer_clear_events();
     keyer_release_key_out_element();
+    s_cancel_ignore_tip = false;
+    s_cancel_ignore_ring = false;
 }
 
 static void keyer_configure_gpio(void)
@@ -507,7 +600,6 @@ static void keyer_start_paddle_element(keyer_element_t element)
         return;
     }
 
-    keyer_stop_tx_playback(true);
     keyer_start_key_out_element(element, tone_ms);
 
     if (dit) {
@@ -661,7 +753,10 @@ static keyer_element_t keyer_choose_next_iambic_element(bool dit_pressed, bool d
     return KEYER_ELEMENT_NONE;
 }
 
-static void keyer_update_bug_mode(bool dit_pressed, bool dah_pressed)
+static void keyer_update_bug_mode(bool dit_pressed,
+                                  bool dah_pressed,
+                                  bool tip_pressed,
+                                  bool ring_pressed)
 {
     TickType_t now = xTaskGetTickCount();
 
@@ -670,7 +765,12 @@ static void keyer_update_bug_mode(bool dit_pressed, bool dah_pressed)
 
     if (dah_pressed) {
         if (!s_bug_dah_down) {
-            keyer_stop_tx_playback(true);
+            if (keyer_cancel_tx_with_paddle_element(KEYER_ELEMENT_DAH,
+                                                    s_key_in_mode,
+                                                    tip_pressed,
+                                                    ring_pressed)) {
+                return;
+            }
             keyer_clear_iambic_state();
             keyer_set_key_out_straight(true);
             keyer_push_event(KEYER_EVENT_DAH, '-', (uint16_t)(3U * keyer_dit_ms()));
@@ -705,6 +805,12 @@ static void keyer_update_bug_mode(bool dit_pressed, bool dah_pressed)
     keyer_update_paddle_decode_gaps(now);
 
     if (dit_pressed) {
+        if (keyer_cancel_tx_with_paddle_element(KEYER_ELEMENT_DIT,
+                                                s_key_in_mode,
+                                                tip_pressed,
+                                                ring_pressed)) {
+            return;
+        }
         keyer_start_paddle_element(KEYER_ELEMENT_DIT);
         return;
     }
@@ -730,7 +836,7 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
     }
 
     if (s_paddle_mode == KEYER_PADDLE_BUG) {
-        keyer_update_bug_mode(dit_pressed, dah_pressed);
+        keyer_update_bug_mode(dit_pressed, dah_pressed, tip_pressed, ring_pressed);
         return;
     }
 
@@ -748,6 +854,9 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
 
     next = keyer_choose_next_iambic_element(dit_pressed, dah_pressed);
     if (next != KEYER_ELEMENT_NONE) {
+        if (keyer_cancel_tx_with_paddle_element(next, mode, tip_pressed, ring_pressed)) {
+            return;
+        }
         keyer_start_paddle_element(next);
         return;
     }
@@ -755,12 +864,14 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
     keyer_clear_iambic_state();
 }
 
-static void keyer_update_straight_key_mode(bool key_down)
+static void keyer_update_straight_key_mode(bool key_down, bool tip_source)
 {
     keyer_clear_iambic_state();
 
     if (key_down && !s_straight_key_down) {
-        keyer_stop_tx_playback(true);
+        if (keyer_cancel_tx_with_straight_key(tip_source)) {
+            return;
+        }
         keyer_set_key_out_straight(true);
         keyer_push_event(KEYER_EVENT_DIT, '.', 0U);
         if (!s_mute) {
@@ -1221,7 +1332,9 @@ void keyer_service_play_text(const char *text)
         return;
     }
 
-    keyer_stop_tx_playback(true);
+    if (keyer_tx_playback_active()) {
+        keyer_stop_tx_playback(true);
+    }
     snprintf(s_tx_text, sizeof(s_tx_text), "%s", text);
     s_tx_text_pos = 0U;
     s_tx_pattern = NULL;
@@ -1233,12 +1346,14 @@ void keyer_service_play_text(const char *text)
 
 void keyer_service_stop_tx(void)
 {
-    keyer_stop_tx_playback(true);
+    if (keyer_tx_playback_active()) {
+        keyer_stop_tx_playback(true);
+    }
 }
 
 bool keyer_service_is_tx_active(void)
 {
-    return s_tx_state != KEYER_TX_IDLE;
+    return keyer_tx_playback_active();
 }
 
 void keyer_service_update(void)
@@ -1250,6 +1365,7 @@ void keyer_service_update(void)
     keyer_update_key_out_timing(now);
     keyer_update_tx(now);
     keyer_read_paddle_inputs(&tip_pressed, &ring_pressed);
+    keyer_filter_cancel_ignored_inputs(&tip_pressed, &ring_pressed);
 
     switch (s_key_in_mode) {
     case KEYER_KEY_IN_PADDLE:
@@ -1257,10 +1373,10 @@ void keyer_service_update(void)
         keyer_update_paddle_mode(s_key_in_mode, tip_pressed, ring_pressed);
         break;
     case KEYER_KEY_IN_SK_T:
-        keyer_update_straight_key_mode(tip_pressed);
+        keyer_update_straight_key_mode(tip_pressed, true);
         break;
     case KEYER_KEY_IN_SK_R:
-        keyer_update_straight_key_mode(ring_pressed);
+        keyer_update_straight_key_mode(ring_pressed, false);
         break;
     default:
         keyer_reset_input_state();
