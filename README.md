@@ -54,17 +54,62 @@ Mode select currently shows:
 ### Keyer
 
 Keyer mode starts on boot. Paddle and straight-key input are handled by
-`keyer_service`. Keyboard letters and digits are sent as CW through the trainer
-helper path.
+`keyer_service`. Keyboard CW characters typed on the Cardputer are queued on
+line 6 and transmitted after `txDelay`, or immediately with Enter.
+
+The Keyer top row is a fixed 20-character white status line:
+
+```text
+Keyer [keyIn] [keyOut] [WPM]
+```
+
+Lines 1-5 show decoded key input history in green. Line 6 shows the keyboard TX
+buffer, selected message, or a short status such as `Mute:ON`.
 
 Keyer shortcuts:
 
 ```text
-+ or =    raise keyer WPM
--         lower keyer WPM
-]         raise sidetone pitch
-[         lower sidetone pitch
+Alt       toggle M1-M5 shortcut overlay
+1..5      select/send M1-M5 while Alt overlay is active
+]         raise keyer WPM
+[         lower keyer WPM
+\         toggle Keyer Mute ON/OFF
+Enter     send pending keyboard text or selected message now
+Backspace edit pending keyboard text
+Hold Backspace clear decoded history and TX buffer
+`         cancel current TX/playback
 ```
+
+Mute suppresses sidetone only; it does not disable keyOut. Message memories are
+plain text. There is no bracket macro expansion or `qsocalls.txt` lookup.
+
+Keyer settings:
+
+```text
+Page 1
+1 Vol       0..99
+2 Mute      ON/OFF, volatile and resets OFF on boot
+3 Wpm       5..60
+4 Tone      300..999 Hz
+5 keyIn     Pdl, Pdl-R, SK-T, SK-R
+6 keyOut    Pdl, Pdl-R, SK, SK-M, OFF
+
+Page 2
+1 M1        CQ SOTA DE AG6AQ
+2 M2        TU UR CA CA BK
+3 M3        BK TU 72 DE AG6AQ E E
+4 M4        AG6AQ
+5 M5        BK TU GM UR 599 599 CA CA BK
+6 RepeatInt 1..99 seconds, used by repeating M1
+
+Page 3
+1 Paddle    IambicA, IambicB, Bug
+3 txDelay   0..99 seconds
+```
+
+M1 repeats at `RepeatInt` until canceled. M2-M5 are one-shot. A paddle or
+straight-key press cancels active message/TX playback; the cancel element is
+consumed.
 
 ### Lessons
 
@@ -153,35 +198,50 @@ System mode contains device-wide settings and actions.
 2 KeyIn
 3 KeyIn WPM
 4 Sleep/Batt
-5 Date
-6 Time
+5 USB Drive
+6 Tone
 ```
 
 `KeyIn` cycles through the available input modes, including paddle,
-reverse-paddle, straight-key, and mono straight-key modes.
+reverse-paddle, and straight-key modes. `USB Drive` exposes the FATFS settings
+volume to a PC; eject safely, then turn USB Drive OFF or reboot so firmware can
+mount the filesystem again.
 
 ## KeyIn Modes
 
 ```text
-Paddle    G13/Tip = dit, G15/Ring = dah
-PaddleR   G13/Tip = dah, G15/Ring = dit
-SK        G13/Tip = straight key input
-SK-Mono   G13/Tip or G15/Ring = straight key input
+Pdl       G13/Tip = dit, G15/Ring = dah
+Pdl-R     G13/Tip = dah, G15/Ring = dit
+SK-T      G13/Tip straight key input, ignore ring
+SK-R      G15/Ring straight key input, ignore tip
 ```
 
-## Current Data And Persistence
+## KeyOut Modes
+
+KeyOut uses active-low open-drain outputs: G3 is tip and G6 is ring.
+
+```text
+Pdl       dit to G3/Tip, dah to G6/Ring
+Pdl-R     dit to G6/Ring, dah to G3/Tip
+SK        key both G3/Tip and G6/Ring
+SK-M      key G3/Tip and hold G6/Ring low for MTR
+OFF       disable keyOut GPIO activity
+```
+
+## Data And Persistence
 
 Lessons, Words, Calls, and Plain currently use firmware-generated or
-firmware-built-in practice data. The storage API has load/save stubs for
-trainer config and results, but real FATFS-backed persistence is not enabled
-yet.
+firmware-built-in practice data.
+
+Settings are saved in FATFS as `/fatfs/setting.txt`. Saved settings include
+system volume/tone/keyIn/WPM, Keyer keyOut/paddle/txDelay/RepeatInt/M1-M5, and
+trainer mode configuration. Keyer Mute is intentionally not persisted.
 
 ## Current Limitations
 
 ```text
 No file-backed word/callsign/plaintext lists yet
-No user-editable setting.txt persistence yet
-No USB flash-drive mode yet
+Trainer result persistence is not enabled yet
 No CW decoder display yet
 No QSO/logging/statistics mode yet
 Callsign bank is prototype data and will be replaced or generated later
