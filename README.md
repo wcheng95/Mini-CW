@@ -54,8 +54,9 @@ Mode select currently shows:
 ### Keyer
 
 Keyer mode starts on boot. Paddle and straight-key input are handled by
-`keyer_service`. Keyboard CW characters typed on the Cardputer are queued on
-line 6 and transmitted after `txDelay`, or immediately with Enter.
+`keyer_service`. Keyboard CW characters typed on the Cardputer and M1-M5 message
+memories append into one TX FIFO on line 6. TX starts after `txDelay`, or
+immediately with Enter.
 
 The Keyer top row is a fixed 20-character white status line:
 
@@ -63,8 +64,9 @@ The Keyer top row is a fixed 20-character white status line:
 Keyer [keyIn] [keyOut] [WPM]
 ```
 
-Lines 1-5 show decoded key input history in green. Line 6 shows the keyboard TX
-buffer, selected message, or a short status such as `Mute:ON`.
+Lines 1-5 show decoded key input history in green. Line 6 shows the remaining TX
+FIFO tail, selected status text such as `Mute:ON`, or Tune state. Sent
+characters are removed from the display after they complete.
 
 Keyer shortcuts:
 
@@ -75,14 +77,16 @@ Alt       toggle M1-M5 shortcut overlay
 ]         raise keyer WPM
 [         lower keyer WPM
 \         toggle Keyer Mute ON/OFF
-Enter     send pending keyboard text or selected message now
-Backspace edit pending keyboard text
-Hold Backspace clear decoded history and TX buffer
+Enter     start pending TX FIFO now
+Backspace edit the unsent FIFO tail
+Hold Backspace clear decoded history and TX FIFO
 `         cancel current TX/playback
 ```
 
 Mute suppresses sidetone only; it does not disable keyOut. Message memories are
 plain text. There is no bracket macro expansion or `qsocalls.txt` lookup.
+Keyboard and message boundaries get one inserted space when needed, so a message,
+typed RST, and another message send in exact FIFO order without overlap.
 
 Tune is a Keyer-only sub-mode. Press Tab from the Keyer main page to enter or
 exit it. The top row changes to `Tune` and line 6 shows `Tune`, `Tune:T`, or
@@ -116,9 +120,9 @@ Page 3
 5 TuneTimeout 0..20 seconds, 0 means no timeout
 ```
 
-M1 repeats at `RepeatInt` until canceled. M2-M5 are one-shot. A paddle or
-straight-key press cancels active message/TX playback; the cancel element is
-consumed.
+M1 repeats at `RepeatInt` after the FIFO drains. Keyboard input or selecting
+M2-M5 cancels M1 repeat. M2-M5 are one-shot. A paddle or straight-key press
+cancels active or queued message/TX FIFO content; the cancel element is consumed.
 
 ### Lessons
 

@@ -11,6 +11,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -112,6 +113,13 @@ uint16_t keyer_service_get_dit_ms(void);
 void keyer_service_play_text(const char *text);
 void keyer_service_stop_tx(void);
 bool keyer_service_is_tx_active(void);
+bool keyer_service_tx_append_text(const char *text, bool insert_space);
+bool keyer_service_tx_backspace(void);
+void keyer_service_tx_clear(void);
+void keyer_service_tx_start(void);
+bool keyer_service_tx_has_text(void);
+void keyer_service_tx_copy_text(char *destination, size_t destination_size);
+uint32_t keyer_service_tx_revision(void);
 void keyer_service_set_tune_active(bool active);
 bool keyer_service_get_tune_active(void);
 void keyer_service_set_tune_latched(bool latched);

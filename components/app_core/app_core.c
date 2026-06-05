@@ -29,8 +29,6 @@ static const char *TAG = "app_core";
 
 #define APP_INPUT_POLL_MS 5U
 #define APP_SYSTEM_CONFIG_SAVE_DELAY_MS 1000U
-#define APP_KEYER_TX_BUFFER_MAX 127U
-#define APP_KEYER_MACRO_TEXT_MAX 255U
 
 static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
 {
@@ -58,20 +56,14 @@ static bool s_keyer_config_dirty;
 static TickType_t s_keyer_config_save_due;
 
 typedef struct {
-    char tx_buffer[APP_KEYER_TX_BUFFER_MAX + 1U];
-    uint8_t tx_len;
     bool tx_pending;
     TickType_t tx_due;
 
-    bool macro_active;
-    uint8_t macro_index;
-    bool macro_pending_start;
-    TickType_t macro_start_due;
-    bool macro_repeat_enabled;
-    bool macro_waiting_repeat;
-    TickType_t macro_repeat_due;
-    char macro_text[APP_KEYER_MACRO_TEXT_MAX + 1U];
-    uint16_t macro_pos;
+    bool m1_repeat_active;
+    bool m1_repeat_waiting;
+    TickType_t m1_repeat_due;
+    bool last_append_was_message;
+    uint32_t tx_revision;
 
     bool tune_active;
     bool tune_timeout_pending;
@@ -315,151 +307,166 @@ static void app_core_handle_plaintext_select(void)
 
 static void app_core_keyer_set_tx_display(void)
 {
-    ui_service_keyer_set_tx_text(s_keyer.tx_buffer);
+    char tx_text[UI_INPUT_EVENT_TEXT_MAX + 1U];
+
+    keyer_service_tx_copy_text(tx_text, sizeof(tx_text));
+    ui_service_keyer_set_tx_text(tx_text);
 }
 
-static void app_core_keyer_clear_tx_buffer(void)
+static void app_core_keyer_sync_tx_display(bool force)
 {
-    s_keyer.tx_buffer[0] = '\0';
-    s_keyer.tx_len = 0U;
+    uint32_t revision = keyer_service_tx_revision();
+
+    if (force || revision != s_keyer.tx_revision) {
+        s_keyer.tx_revision = revision;
+        app_core_keyer_set_tx_display();
+        ui_service_refresh();
+    }
+}
+
+static void app_core_keyer_cancel_repeat(void)
+{
+    s_keyer.m1_repeat_active = false;
+    s_keyer.m1_repeat_waiting = false;
+}
+
+static void app_core_keyer_clear_tx_fifo(void)
+{
     s_keyer.tx_pending = false;
-    ui_service_keyer_clear_tx_text();
+    s_keyer.last_append_was_message = false;
+    app_core_keyer_cancel_repeat();
+    keyer_service_tx_clear();
+    app_core_keyer_sync_tx_display(true);
 }
 
 static void app_core_keyer_schedule_tx(void)
 {
-    s_keyer.tx_pending = true;
-    s_keyer.tx_due =
-        xTaskGetTickCount() +
-        app_core_ms_to_delay_ticks((uint32_t)keyer_service_get_tx_delay_s() * 1000U);
-}
+    uint8_t delay_s;
 
-static void app_core_keyer_send_buffer_now(void)
-{
-    if (s_keyer.tx_len == 0U) {
+    if (keyer_service_is_tx_active()) {
+        s_keyer.tx_pending = false;
         return;
     }
 
-    keyer_service_play_text(s_keyer.tx_buffer);
-    app_core_keyer_clear_tx_buffer();
+    delay_s = keyer_service_get_tx_delay_s();
+    if (delay_s == 0U) {
+        s_keyer.tx_pending = false;
+        keyer_service_tx_start();
+        app_core_keyer_sync_tx_display(false);
+        return;
+    }
+
+    s_keyer.tx_pending = true;
+    s_keyer.tx_due = xTaskGetTickCount() + app_core_ms_to_delay_ticks((uint32_t)delay_s * 1000U);
+}
+
+static void app_core_keyer_start_tx_now(void)
+{
+    if (!keyer_service_tx_has_text()) {
+        s_keyer.tx_pending = false;
+        return;
+    }
+
+    s_keyer.tx_pending = false;
+    keyer_service_tx_start();
+    app_core_keyer_sync_tx_display(false);
 }
 
 static void app_core_keyer_append_tx_char(char key)
 {
     char normalized = key == ' ' ? ' ' : (char)toupper((unsigned char)key);
+    char text[2] = {normalized, '\0'};
+    bool insert_space;
 
     if (normalized != ' ' && audio_service_get_cw_pattern(normalized) == NULL) {
         ui_service_keyer_set_status("Unsupported");
         return;
     }
 
-    if (s_keyer.tx_len >= APP_KEYER_TX_BUFFER_MAX) {
+    app_core_keyer_cancel_repeat();
+    insert_space = s_keyer.last_append_was_message && normalized != ' ';
+    if (!keyer_service_tx_append_text(text, insert_space)) {
         ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
-    s_keyer.tx_buffer[s_keyer.tx_len++] = normalized;
-    s_keyer.tx_buffer[s_keyer.tx_len] = '\0';
-    app_core_keyer_set_tx_display();
+    s_keyer.last_append_was_message = false;
+    app_core_keyer_sync_tx_display(true);
     app_core_keyer_schedule_tx();
 }
 
 static void app_core_keyer_backspace_tx(void)
 {
-    if (s_keyer.tx_len == 0U) {
-        return;
-    }
-
-    --s_keyer.tx_len;
-    s_keyer.tx_buffer[s_keyer.tx_len] = '\0';
-    if (s_keyer.tx_len == 0U) {
-        s_keyer.tx_pending = false;
-    }
-    app_core_keyer_set_tx_display();
-}
-
-static void app_core_keyer_cancel_macro(void)
-{
-    s_keyer.macro_active = false;
-    s_keyer.macro_waiting_repeat = false;
-    s_keyer.macro_pending_start = false;
-    s_keyer.macro_index = 0U;
-    s_keyer.macro_pos = 0U;
-    keyer_service_stop_tx();
-}
-
-static void app_core_keyer_macro_continue(void)
-{
-    char segment[APP_KEYER_TX_BUFFER_MAX + 1U];
-    uint16_t segment_len = 0U;
-
-    if (!s_keyer.macro_active || s_keyer.macro_pending_start || keyer_service_is_tx_active()) {
-        return;
-    }
-
-    if (s_keyer.macro_waiting_repeat) {
-        if (!app_core_tick_reached(xTaskGetTickCount(), s_keyer.macro_repeat_due)) {
-            return;
+    if (keyer_service_tx_backspace()) {
+        if (!keyer_service_tx_has_text()) {
+            s_keyer.tx_pending = false;
+            s_keyer.last_append_was_message = false;
         }
-        s_keyer.macro_waiting_repeat = false;
-        s_keyer.macro_pos = 0U;
+        app_core_keyer_sync_tx_display(true);
     }
+}
 
-    while (s_keyer.macro_text[s_keyer.macro_pos] != '\0' &&
-           segment_len + 1U < sizeof(segment)) {
-        segment[segment_len++] = s_keyer.macro_text[s_keyer.macro_pos++];
-    }
+static void app_core_keyer_append_message(uint8_t message_index)
+{
+    bool insert_space;
+    bool repeat_m1;
 
-    if (segment_len > 0U) {
-        segment[segment_len] = '\0';
-        keyer_service_play_text(segment);
+    if (message_index < 1U || message_index > KEYER_MESSAGE_COUNT) {
         return;
     }
 
-    if (s_keyer.macro_repeat_enabled) {
-        s_keyer.macro_waiting_repeat = true;
-        s_keyer.macro_repeat_due =
+    repeat_m1 = message_index == 1U;
+    if (!repeat_m1) {
+        app_core_keyer_cancel_repeat();
+    }
+
+    insert_space = keyer_service_tx_has_text();
+    if (!keyer_service_tx_append_text(keyer_service_get_message((uint8_t)(message_index - 1U)),
+                                      insert_space)) {
+        ui_service_keyer_set_status("TX buffer full");
+        return;
+    }
+
+    if (repeat_m1) {
+        s_keyer.m1_repeat_active = true;
+        s_keyer.m1_repeat_waiting = false;
+    }
+    s_keyer.last_append_was_message = true;
+    app_core_keyer_sync_tx_display(true);
+    app_core_keyer_schedule_tx();
+}
+
+static void app_core_keyer_repeat_update(void)
+{
+    if (!s_keyer.m1_repeat_active || s_keyer.tx_pending ||
+        keyer_service_is_tx_active() || keyer_service_tx_has_text()) {
+        if (keyer_service_is_tx_active() || keyer_service_tx_has_text() || s_keyer.tx_pending) {
+            s_keyer.m1_repeat_waiting = false;
+        }
+        return;
+    }
+
+    if (!s_keyer.m1_repeat_waiting) {
+        s_keyer.m1_repeat_waiting = true;
+        s_keyer.m1_repeat_due =
             xTaskGetTickCount() +
             app_core_ms_to_delay_ticks((uint32_t)keyer_service_get_repeat_interval_s() * 1000U);
         return;
     }
 
-    s_keyer.macro_active = false;
-    s_keyer.macro_index = 0U;
-}
-
-static void app_core_keyer_start_macro(uint8_t macro_index)
-{
-    if (macro_index < 1U || macro_index > KEYER_MESSAGE_COUNT) {
+    if (!app_core_tick_reached(xTaskGetTickCount(), s_keyer.m1_repeat_due)) {
         return;
     }
 
-    app_core_keyer_clear_tx_buffer();
-    app_core_keyer_cancel_macro();
-    s_keyer.macro_active = true;
-    s_keyer.macro_index = macro_index;
-    s_keyer.macro_pending_start = true;
-    s_keyer.macro_start_due =
-        xTaskGetTickCount() +
-        app_core_ms_to_delay_ticks((uint32_t)keyer_service_get_tx_delay_s() * 1000U);
-    s_keyer.macro_repeat_enabled = macro_index == 1U;
-    s_keyer.macro_waiting_repeat = false;
-    s_keyer.macro_pos = 0U;
-    snprintf(s_keyer.macro_text,
-             sizeof(s_keyer.macro_text),
-             "%s",
-             keyer_service_get_message((uint8_t)(macro_index - 1U)));
-    ui_service_keyer_set_tx_text(s_keyer.macro_text);
-}
-
-static void app_core_keyer_start_pending_macro_now(void)
-{
-    if (!s_keyer.macro_active || !s_keyer.macro_pending_start) {
+    s_keyer.m1_repeat_waiting = false;
+    if (!keyer_service_tx_append_text(keyer_service_get_message(0U), false)) {
+        ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
-    s_keyer.macro_pending_start = false;
-    app_core_keyer_macro_continue();
+    s_keyer.last_append_was_message = true;
+    app_core_keyer_sync_tx_display(true);
+    app_core_keyer_start_tx_now();
 }
 
 static void app_core_keyer_sync_tune_ui(bool force)
@@ -478,8 +485,7 @@ static void app_core_keyer_sync_tune_ui(bool force)
 static void app_core_keyer_set_tune_active(bool active)
 {
     if (active) {
-        app_core_keyer_cancel_macro();
-        app_core_keyer_clear_tx_buffer();
+        app_core_keyer_clear_tx_fifo();
         s_keyer.tune_active = true;
         s_keyer.tune_timeout_pending = false;
         keyer_service_set_tune_active(true);
@@ -539,16 +545,12 @@ static void app_core_keyer_update(void)
         return;
     }
 
-    if (s_keyer.macro_pending_start &&
-        app_core_tick_reached(xTaskGetTickCount(), s_keyer.macro_start_due)) {
-        app_core_keyer_start_pending_macro_now();
-    }
-
     if (s_keyer.tx_pending && app_core_tick_reached(xTaskGetTickCount(), s_keyer.tx_due)) {
-        app_core_keyer_send_buffer_now();
+        app_core_keyer_start_tx_now();
     }
 
-    app_core_keyer_macro_continue();
+    app_core_keyer_repeat_update();
+    app_core_keyer_sync_tx_display(false);
 }
 
 static void app_core_handle_volume_changed(const ui_input_event_t *event)
@@ -1021,9 +1023,12 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
         return false;
     case KEYER_EVENT_DIT:
     case KEYER_EVENT_DAH:
-        if (s_keyer.macro_active) {
-            app_core_keyer_cancel_macro();
-            ui_service_keyer_clear_tx_text();
+        if (s_keyer.tx_pending || s_keyer.m1_repeat_active ||
+            s_keyer.tx_revision != keyer_service_tx_revision()) {
+            s_keyer.tx_pending = false;
+            app_core_keyer_cancel_repeat();
+            s_keyer.last_append_was_message = false;
+            app_core_keyer_sync_tx_display(true);
             return true;
         }
         break;
@@ -1109,8 +1114,7 @@ static void app_core_handle_ui_event(ui_input_event_t event)
             if (s_keyer.tune_active) {
                 app_core_keyer_set_tune_active(false);
             }
-            app_core_keyer_cancel_macro();
-            app_core_keyer_clear_tx_buffer();
+            app_core_keyer_clear_tx_fifo();
             audio_service_stop_all();
             cw_trainer_stop();
         }
@@ -1123,6 +1127,7 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         if (s_keyer.tune_active) {
             app_core_keyer_set_tune_active(false);
         }
+        app_core_keyer_clear_tx_fifo();
         audio_service_stop_all();
         ui_service_prepare_for_sleep();
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1163,20 +1168,15 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         app_core_handle_keyer_mute_changed(&event);
         break;
     case UI_INPUT_EVENT_KEYER_MACRO_SELECTED:
-        app_core_keyer_start_macro((uint8_t)event.value);
+        app_core_keyer_append_message((uint8_t)event.value);
         ui_service_refresh();
         break;
     case UI_INPUT_EVENT_KEYER_SHORTCUT_CHANGED:
-        if (event.value == 0) {
-            app_core_keyer_cancel_macro();
-            ui_service_keyer_clear_tx_text();
-        }
         ui_service_refresh();
         break;
     case UI_INPUT_EVENT_KEYER_CLEAR:
         if (s_app.mode == APP_MODE_KEYER) {
-            app_core_keyer_cancel_macro();
-            app_core_keyer_clear_tx_buffer();
+            app_core_keyer_clear_tx_fifo();
             ui_service_keyer_clear_decoded();
             ui_service_refresh();
         }
@@ -1216,11 +1216,7 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         } else if (s_app.mode == APP_MODE_CALLSIGNS) {
             app_core_handle_callsign_select();
         } else if (s_app.mode == APP_MODE_KEYER) {
-            if (s_keyer.macro_pending_start) {
-                app_core_keyer_start_pending_macro_now();
-            } else {
-                app_core_keyer_send_buffer_now();
-            }
+            app_core_keyer_start_tx_now();
             ui_service_refresh();
         }
         break;

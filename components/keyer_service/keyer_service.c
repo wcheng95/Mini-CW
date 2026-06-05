@@ -38,7 +38,7 @@ static const char *TAG = "keyer_service";
 #define KEYER_GPIO_ACTIVE_LEVEL 0
 #define KEYER_GPIO_INACTIVE_LEVEL 1
 #define KEYER_EVENT_RING_CAP 16U
-#define KEYER_TX_TEXT_MAX 255U
+#define KEYER_TX_TEXT_MAX 511U
 #define KEYER_TX_DELAY_MIN_S 0U
 #define KEYER_TX_DELAY_MAX_S 99U
 #define KEYER_TUNE_TIMEOUT_MIN_S 0U
@@ -105,11 +105,13 @@ typedef enum {
 } keyer_tx_state_t;
 
 static char s_tx_text[KEYER_TX_TEXT_MAX + 1U];
+static uint16_t s_tx_text_len;
 static uint16_t s_tx_text_pos;
 static const char *s_tx_pattern;
 static uint8_t s_tx_pattern_pos;
 static keyer_tx_state_t s_tx_state = KEYER_TX_IDLE;
 static TickType_t s_tx_due_tick;
+static uint32_t s_tx_revision;
 
 static keyer_config_t s_config = {
     .key_out_mode = KEYER_KEY_OUT_PADDLE,
@@ -381,6 +383,57 @@ static bool keyer_tx_playback_active(void)
     return s_tx_state != KEYER_TX_IDLE;
 }
 
+static void keyer_tx_mark_changed(void)
+{
+    ++s_tx_revision;
+}
+
+static bool keyer_tx_has_remaining_text(void)
+{
+    return s_tx_text_pos < s_tx_text_len;
+}
+
+static void keyer_tx_compact(void)
+{
+    uint16_t remaining;
+
+    if (s_tx_text_pos == 0U) {
+        return;
+    }
+
+    if (s_tx_text_pos >= s_tx_text_len) {
+        s_tx_text[0] = '\0';
+        s_tx_text_len = 0U;
+        s_tx_text_pos = 0U;
+        return;
+    }
+
+    remaining = (uint16_t)(s_tx_text_len - s_tx_text_pos);
+    memmove(s_tx_text, &s_tx_text[s_tx_text_pos], remaining);
+    s_tx_text[remaining] = '\0';
+    s_tx_text_len = remaining;
+    s_tx_text_pos = 0U;
+}
+
+static uint16_t keyer_tx_protected_len(void)
+{
+    if (s_tx_state == KEYER_TX_ELEMENT ||
+        (s_tx_state == KEYER_TX_GAP && s_tx_pattern != NULL)) {
+        return (uint16_t)(s_tx_text_pos + 1U);
+    }
+
+    return s_tx_text_pos;
+}
+
+static bool keyer_tx_tail_is_space(void)
+{
+    if (s_tx_text_len == 0U) {
+        return false;
+    }
+
+    return s_tx_text[s_tx_text_len - 1U] == ' ';
+}
+
 static void keyer_filter_cancel_ignored_inputs(bool *tip_pressed, bool *ring_pressed)
 {
     if (tip_pressed != NULL && s_cancel_ignore_tip) {
@@ -432,13 +485,14 @@ static bool keyer_cancel_tx_with_paddle_element(keyer_element_t element,
     char event_char;
     uint16_t duration_ms;
 
-    if (!keyer_tx_playback_active() || element == KEYER_ELEMENT_NONE) {
+    if ((!keyer_tx_playback_active() && !keyer_tx_has_remaining_text()) ||
+        element == KEYER_ELEMENT_NONE) {
         return false;
     }
 
     /* The physical element that cancels active text TX is consumed here: no keyOut,
      * sidetone, or decoder append is produced for this press. */
-    keyer_stop_tx_playback(true);
+    keyer_stop_tx_playback(keyer_tx_playback_active());
     keyer_ignore_physical_paddle_until_release(element, mode, tip_pressed, ring_pressed);
 
     event_type = element == KEYER_ELEMENT_DIT ? KEYER_EVENT_DIT : KEYER_EVENT_DAH;
@@ -450,12 +504,12 @@ static bool keyer_cancel_tx_with_paddle_element(keyer_element_t element,
 
 static bool keyer_cancel_tx_with_straight_key(bool tip_source)
 {
-    if (!keyer_tx_playback_active()) {
+    if (!keyer_tx_playback_active() && !keyer_tx_has_remaining_text()) {
         return false;
     }
 
     /* Straight-key cancel is consumed until the physical key is released. */
-    keyer_stop_tx_playback(true);
+    keyer_stop_tx_playback(keyer_tx_playback_active());
     if (tip_source) {
         s_cancel_ignore_tip = true;
     } else {
@@ -962,7 +1016,11 @@ static void keyer_update_straight_key_mode(bool key_down, bool tip_source)
 
 static void keyer_stop_tx_playback(bool stop_audio)
 {
+    bool had_text = keyer_tx_has_remaining_text() || s_tx_text_len > 0U ||
+                    keyer_tx_playback_active();
+
     s_tx_text[0] = '\0';
+    s_tx_text_len = 0U;
     s_tx_text_pos = 0U;
     s_tx_pattern = NULL;
     s_tx_pattern_pos = 0U;
@@ -972,11 +1030,14 @@ static void keyer_stop_tx_playback(bool stop_audio)
     if (stop_audio) {
         audio_service_stop_all();
     }
+    if (had_text) {
+        keyer_tx_mark_changed();
+    }
 }
 
 static bool keyer_tx_next_supported_char(char *out_ch, const char **out_pattern)
 {
-    while (s_tx_text[s_tx_text_pos] != '\0') {
+    while (s_tx_text_pos < s_tx_text_len) {
         char ch = (char)toupper((unsigned char)s_tx_text[s_tx_text_pos]);
 
         if (ch == ' ') {
@@ -1002,6 +1063,7 @@ static bool keyer_tx_next_supported_char(char *out_ch, const char **out_pattern)
 
         ESP_LOGW(TAG, "unsupported TX character skipped: '%c'", s_tx_text[s_tx_text_pos]);
         ++s_tx_text_pos;
+        keyer_tx_mark_changed();
     }
 
     return false;
@@ -1053,9 +1115,10 @@ static void keyer_tx_begin_next_char(void)
     }
 
     if (ch == ' ') {
-        while (s_tx_text[s_tx_text_pos] == ' ') {
+        while (s_tx_text_pos < s_tx_text_len && s_tx_text[s_tx_text_pos] == ' ') {
             ++s_tx_text_pos;
         }
+        keyer_tx_mark_changed();
         keyer_tx_schedule_gap(7U);
         return;
     }
@@ -1078,6 +1141,7 @@ static void keyer_tx_advance_after_element(void)
     }
 
     ++s_tx_text_pos;
+    keyer_tx_mark_changed();
     s_tx_pattern = NULL;
     s_tx_pattern_pos = 0U;
 
@@ -1087,9 +1151,10 @@ static void keyer_tx_advance_after_element(void)
     }
 
     if (next_ch == ' ') {
-        while (s_tx_text[s_tx_text_pos] == ' ') {
+        while (s_tx_text_pos < s_tx_text_len && s_tx_text[s_tx_text_pos] == ' ') {
             ++s_tx_text_pos;
         }
+        keyer_tx_mark_changed();
         keyer_tx_schedule_gap(7U);
     } else {
         keyer_tx_schedule_gap(3U);
@@ -1419,29 +1484,129 @@ uint16_t keyer_service_get_dit_ms(void)
     return keyer_dit_ms();
 }
 
+bool keyer_service_tx_append_text(const char *text, bool insert_space)
+{
+    size_t text_len;
+    bool add_space = false;
+
+    if (text == NULL || text[0] == '\0') {
+        return true;
+    }
+
+    text_len = strlen(text);
+    keyer_tx_compact();
+
+    if (insert_space && s_tx_text_len > 0U && !keyer_tx_tail_is_space() && text[0] != ' ') {
+        add_space = true;
+    }
+
+    if ((size_t)s_tx_text_len + text_len + (add_space ? 1U : 0U) > KEYER_TX_TEXT_MAX) {
+        return false;
+    }
+
+    if (add_space) {
+        s_tx_text[s_tx_text_len++] = ' ';
+    }
+
+    memcpy(&s_tx_text[s_tx_text_len], text, text_len);
+    s_tx_text_len = (uint16_t)(s_tx_text_len + text_len);
+    s_tx_text[s_tx_text_len] = '\0';
+    keyer_tx_mark_changed();
+    return true;
+}
+
+bool keyer_service_tx_backspace(void)
+{
+    uint16_t protected_len;
+
+    keyer_tx_compact();
+    protected_len = keyer_tx_protected_len();
+
+    if (s_tx_text_len == 0U || s_tx_text_len <= protected_len) {
+        return false;
+    }
+
+    --s_tx_text_len;
+    s_tx_text[s_tx_text_len] = '\0';
+    keyer_tx_mark_changed();
+    return true;
+}
+
+void keyer_service_tx_clear(void)
+{
+    keyer_stop_tx_playback(keyer_tx_playback_active());
+}
+
+void keyer_service_tx_start(void)
+{
+    if (keyer_tx_playback_active() || !keyer_tx_has_remaining_text()) {
+        return;
+    }
+
+    keyer_tx_compact();
+    if (!keyer_tx_has_remaining_text()) {
+        return;
+    }
+
+    s_tx_pattern = NULL;
+    s_tx_pattern_pos = 0U;
+    s_tx_state = KEYER_TX_GAP;
+    s_tx_due_tick = xTaskGetTickCount();
+    ESP_LOGI(TAG, "TX FIFO start: %s", s_tx_text);
+}
+
+bool keyer_service_tx_has_text(void)
+{
+    return keyer_tx_has_remaining_text();
+}
+
+void keyer_service_tx_copy_text(char *destination, size_t destination_size)
+{
+    size_t remaining;
+    size_t copy_len;
+    const char *source;
+
+    if (destination == NULL || destination_size == 0U) {
+        return;
+    }
+
+    destination[0] = '\0';
+    if (!keyer_tx_has_remaining_text()) {
+        return;
+    }
+
+    remaining = (size_t)(s_tx_text_len - s_tx_text_pos);
+    copy_len = remaining;
+    source = &s_tx_text[s_tx_text_pos];
+
+    if (copy_len >= destination_size) {
+        copy_len = destination_size - 1U;
+        source += remaining - copy_len;
+    }
+
+    memcpy(destination, source, copy_len);
+    destination[copy_len] = '\0';
+}
+
+uint32_t keyer_service_tx_revision(void)
+{
+    return s_tx_revision;
+}
+
 void keyer_service_play_text(const char *text)
 {
     if (text == NULL || text[0] == '\0') {
         return;
     }
 
-    if (keyer_tx_playback_active()) {
-        keyer_stop_tx_playback(true);
-    }
-    snprintf(s_tx_text, sizeof(s_tx_text), "%s", text);
-    s_tx_text_pos = 0U;
-    s_tx_pattern = NULL;
-    s_tx_pattern_pos = 0U;
-    s_tx_state = KEYER_TX_GAP;
-    s_tx_due_tick = xTaskGetTickCount();
-    ESP_LOGI(TAG, "TX text: %s", s_tx_text);
+    keyer_service_tx_clear();
+    (void)keyer_service_tx_append_text(text, false);
+    keyer_service_tx_start();
 }
 
 void keyer_service_stop_tx(void)
 {
-    if (keyer_tx_playback_active()) {
-        keyer_stop_tx_playback(true);
-    }
+    keyer_service_tx_clear();
 }
 
 bool keyer_service_is_tx_active(void)
@@ -1459,9 +1624,7 @@ void keyer_service_set_tune_active(bool active)
         return;
     }
 
-    if (keyer_tx_playback_active()) {
-        keyer_stop_tx_playback(true);
-    }
+    keyer_service_tx_clear();
 
     keyer_reset_input_state();
     keyer_clear_tune_state();

@@ -2376,7 +2376,6 @@ static bool ui_service_handle_keyer_shortcut_char(char key, ui_input_event_t *ou
     if (key >= '1' && key <= '5') {
         uint8_t index = (uint8_t)(key - '0');
         s_ui.keyer_shortcut_macro = index;
-        ui_service_keyer_set_tx_text(keyer_service_get_message((uint8_t)(index - 1U)));
         ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_MACRO_SELECTED, key);
         if (out_event != NULL) {
             out_event->value = index;
