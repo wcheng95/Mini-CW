@@ -69,6 +69,7 @@ buffer, selected message, or a short status such as `Mute:ON`.
 Keyer shortcuts:
 
 ```text
+Tab       enter/exit Tune mode
 Alt       toggle M1-M5 shortcut overlay
 1..5      select/send M1-M5 while Alt overlay is active
 ]         raise keyer WPM
@@ -82,6 +83,13 @@ Hold Backspace clear decoded history and TX buffer
 
 Mute suppresses sidetone only; it does not disable keyOut. Message memories are
 plain text. There is no bracket macro expansion or `qsocalls.txt` lookup.
+
+Tune is a Keyer-only sub-mode. Press Tab from the Keyer main page to enter or
+exit it. The top row changes to `Tune` and line 6 shows `Tune`, `Tune:T`, or
+`Tune:Hold`. In Tune mode, paddle tip or ring true-holds tune output through the
+current keyOut mode. Press `T` to start latched tune; press `T` again, press Tab,
+press the paddle, or wait for `TuneTimeout` to stop it. `TuneTimeout:0` disables
+the automatic timeout. Other keyboard keys are ignored while Tune is active.
 
 Keyer settings:
 
@@ -105,6 +113,7 @@ Page 2
 Page 3
 1 Paddle    IambicA, IambicB, Bug
 3 txDelay   0..99 seconds
+5 TuneTimeout 0..20 seconds, 0 means no timeout
 ```
 
 M1 repeats at `RepeatInt` until canceled. M2-M5 are one-shot. A paddle or
@@ -234,8 +243,9 @@ Lessons, Words, Calls, and Plain currently use firmware-generated or
 firmware-built-in practice data.
 
 Settings are saved in FATFS as `/fatfs/setting.txt`. Saved settings include
-system volume/tone/keyIn/WPM, Keyer keyOut/paddle/txDelay/RepeatInt/M1-M5, and
-trainer mode configuration. Keyer Mute is intentionally not persisted.
+system volume/tone/keyIn/WPM; Keyer keyOut, paddle, txDelay, TuneTimeout,
+RepeatInt, and M1-M5; and trainer mode configuration. Keyer Mute is
+intentionally not persisted.
 
 ## Current Limitations
 

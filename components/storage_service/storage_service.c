@@ -57,6 +57,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_PLAINTEXT_WPM_MAX 40U
 #define STORAGE_KEYER_TX_DELAY_MIN 0U
 #define STORAGE_KEYER_TX_DELAY_MAX 99U
+#define STORAGE_KEYER_TUNE_TIMEOUT_MIN 0U
+#define STORAGE_KEYER_TUNE_TIMEOUT_MAX 20U
 #define STORAGE_KEYER_REPEAT_MIN 1U
 #define STORAGE_KEYER_REPEAT_MAX 99U
 #define STORAGE_KEYER_OLD_DEFAULT_M2 "[" "CALL] TU [" "OP] UR [" "599]*2 CA CA BK"
@@ -95,6 +97,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_M3 (1UL << 28)
 #define STORAGE_KEY_KEYER_M4 (1UL << 29)
 #define STORAGE_KEY_KEYER_M5 (1UL << 30)
+#define STORAGE_KEY_KEYER_TUNE_TIMEOUT (1UL << 31)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -111,14 +114,14 @@ static const char *TAG = "storage_service";
      STORAGE_KEY_LESSON_CODE_WPM | STORAGE_KEY_LESSON_EFFECTIVE_WPM |               \
      STORAGE_KEY_LESSON_GROUP_LEN | STORAGE_KEY_WORD_SPEED |                        \
      STORAGE_KEY_WORD_MIN_CHAR_WPM | STORAGE_KEY_WORD_LESSON |                      \
-     STORAGE_KEY_WORD_MAX_LEN | STORAGE_KEY_WORD_MAX_WPM |                          \
+      STORAGE_KEY_WORD_MAX_LEN | STORAGE_KEY_WORD_MAX_WPM |                          \
       STORAGE_KEY_WORD_DELAY_S | STORAGE_KEY_CALLSIGN_SPEED |                        \
       STORAGE_KEY_CALLSIGN_MIN_CHAR_WPM | STORAGE_KEY_CALLSIGN_MAX_WPM |             \
       STORAGE_KEY_CALLSIGN_DELAY_S |                                                 \
       STORAGE_KEY_KEYER_KEY_OUT | STORAGE_KEY_KEYER_PADDLE |                         \
       STORAGE_KEY_KEYER_TX_DELAY | STORAGE_KEY_KEYER_REPEAT | STORAGE_KEY_KEYER_M1 |  \
       STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
-      STORAGE_KEY_KEYER_M5 |                                                         \
+      STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT |                        \
       STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
@@ -599,6 +602,7 @@ static void storage_settings_set_defaults(void)
         .key_out_mode = KEYER_KEY_OUT_PADDLE,
         .paddle_mode = KEYER_PADDLE_IAMBIC_B,
         .tx_delay_s = 1,
+        .tune_timeout_s = 10,
         .repeat_interval_s = 6,
         .message = {
             "CQ SOTA DE AG6AQ",
@@ -696,6 +700,10 @@ static void storage_normalize_keyer_config(bool *changed)
         storage_clamp_u8(s_keyer_config.repeat_interval_s,
                          STORAGE_KEYER_REPEAT_MIN,
                          STORAGE_KEYER_REPEAT_MAX);
+    s_keyer_config.tune_timeout_s =
+        storage_clamp_u8(s_keyer_config.tune_timeout_s,
+                         STORAGE_KEYER_TUNE_TIMEOUT_MIN,
+                         STORAGE_KEYER_TUNE_TIMEOUT_MAX);
 
     for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
         s_keyer_config.message[i][KEYER_MESSAGE_MAX_LEN] = '\0';
@@ -1025,6 +1033,13 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_KEYER_REPEAT_MAX,
                                            &s_keyer_config.repeat_interval_s,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "tune_timeout_s")) {
+            *seen_keys |= STORAGE_KEY_KEYER_TUNE_TIMEOUT;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_KEYER_TUNE_TIMEOUT_MIN,
+                                           STORAGE_KEYER_TUNE_TIMEOUT_MAX,
+                                           &s_keyer_config.tune_timeout_s,
+                                           changed);
         } else if (storage_str_equal_ignore_case(key, "m1")) {
             *seen_keys |= STORAGE_KEY_KEYER_M1;
             storage_copy_keyer_message(s_keyer_config.message[0], value);
@@ -1236,9 +1251,10 @@ static bool storage_write_settings_file(void)
                            "\n"
                            "[keyer]\n"
                            "key_out=%s\n"
-                           "paddle=%s\n"
-                           "tx_delay_s=%u\n"
-                           "repeat_interval_s=%u\n"
+                            "paddle=%s\n"
+                            "tx_delay_s=%u\n"
+                            "tune_timeout_s=%u\n"
+                            "repeat_interval_s=%u\n"
                            "m1=%s\n"
                            "m2=%s\n"
                            "m3=%s\n"
@@ -1274,9 +1290,10 @@ static bool storage_write_settings_file(void)
                            storage_key_in_mode_label(s_system_config.key_in_mode),
                            (unsigned)s_system_config.key_in_wpm,
                            storage_key_out_mode_label(s_keyer_config.key_out_mode),
-                           keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
-                           (unsigned)s_keyer_config.tx_delay_s,
-                           (unsigned)s_keyer_config.repeat_interval_s,
+                            keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
+                            (unsigned)s_keyer_config.tx_delay_s,
+                            (unsigned)s_keyer_config.tune_timeout_s,
+                            (unsigned)s_keyer_config.repeat_interval_s,
                            s_keyer_config.message[0],
                            s_keyer_config.message[1],
                            s_keyer_config.message[2],

@@ -63,6 +63,7 @@ typedef enum {
     UI_EDIT_PLAINTEXT_CODE_WPM,
     UI_EDIT_PLAINTEXT_EFFECTIVE_WPM,
     UI_EDIT_KEYER_TX_DELAY_S,
+    UI_EDIT_KEYER_TUNE_TIMEOUT_S,
     UI_EDIT_KEYER_REPEAT_INTERVAL_S,
 } ui_edit_target_t;
 
@@ -87,6 +88,7 @@ typedef struct {
     bool edit_user_digits;
     bool keyer_shortcut_active;
     uint8_t keyer_shortcut_macro;
+    bool keyer_tune_active;
 } ui_service_state_t;
 
 static const ui_input_event_t UI_EVENT_NONE = {
@@ -110,6 +112,7 @@ static ui_service_state_t s_ui = {
     .edit_user_digits = false,
     .keyer_shortcut_active = false,
     .keyer_shortcut_macro = 0U,
+    .keyer_tune_active = false,
 };
 
 static bool s_cardputer_ready;
@@ -126,6 +129,8 @@ static bool s_cardputer_ready;
 #define UI_DELAY_S_MIN 0
 #define UI_DELAY_S_MAX 5
 #define UI_KEYER_TX_DELAY_S_MIN 0
+#define UI_KEYER_TUNE_TIMEOUT_S_MIN 0
+#define UI_KEYER_TUNE_TIMEOUT_S_MAX 20
 #define UI_KEYER_REPEAT_S_MIN 1
 #define UI_KEYER_DELAY_S_MAX 99
 #define UI_KEYER_VISIBLE_LINES 5U
@@ -202,27 +207,6 @@ static void ui_service_set_top_chars(mini_cw_screen_t *screen,
     for (i = 0U; i < UI_COLS && text[i] != '\0'; ++i) {
         screen->top[i] = text[i];
     }
-}
-
-static void ui_service_copy_right_aligned_field(char *dest, size_t width, const char *text)
-{
-    size_t len;
-
-    if (dest == NULL || width == 0U) {
-        return;
-    }
-
-    memset(dest, ' ', width);
-    if (text == NULL) {
-        return;
-    }
-
-    len = strlen(text);
-    if (len > width) {
-        len = width;
-    }
-
-    memcpy(dest + width - len, text, len);
 }
 
 static int ui_service_clamp_int(int value, int min_value, int max_value)
@@ -417,6 +401,21 @@ bool ui_service_keyer_shortcut_active(void)
     return s_ui.keyer_shortcut_active;
 }
 
+void ui_service_keyer_set_tune_active(bool active)
+{
+    s_ui.keyer_tune_active = active;
+    if (active) {
+        s_ui.keyer_shortcut_active = false;
+        s_ui.keyer_shortcut_macro = 0U;
+        ui_service_clear_edit();
+    }
+}
+
+bool ui_service_keyer_tune_active(void)
+{
+    return s_ui.keyer_tune_active;
+}
+
 static int ui_service_read_battery_percent(void)
 {
     int percent = 0;
@@ -468,6 +467,8 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return UI_WPM_MIN;
     case UI_EDIT_KEYER_TX_DELAY_S:
         return UI_KEYER_TX_DELAY_S_MIN;
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
+        return UI_KEYER_TUNE_TIMEOUT_S_MIN;
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_KEYER_REPEAT_S_MIN;
     case UI_EDIT_NONE:
@@ -517,6 +518,8 @@ static int ui_service_edit_max(ui_edit_target_t target)
     case UI_EDIT_KEYER_TX_DELAY_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_KEYER_DELAY_S_MAX;
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
+        return UI_KEYER_TUNE_TIMEOUT_S_MAX;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -550,6 +553,7 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
     case UI_EDIT_KEYER_TX_DELAY_S:
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return 1;
     case UI_EDIT_NONE:
@@ -617,6 +621,8 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return cw_trainer_plaintext_get_config()->effective_wpm;
     case UI_EDIT_KEYER_TX_DELAY_S:
         return keyer_service_get_tx_delay_s();
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
+        return keyer_service_get_tune_timeout_s();
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return keyer_service_get_repeat_interval_s();
     case UI_EDIT_NONE:
@@ -656,6 +662,7 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
         return UI_INPUT_EVENT_PLAINTEXT_CONFIG_CHANGED;
     case UI_EDIT_KEYER_TX_DELAY_S:
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_INPUT_EVENT_KEYER_CONFIG_CHANGED;
     case UI_EDIT_NONE:
@@ -709,6 +716,8 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
         return UI_SETTING_PLAINTEXT_EFFECTIVE_WPM;
     case UI_EDIT_KEYER_TX_DELAY_S:
         return UI_SETTING_KEYER_TX_DELAY_S;
+    case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
+        return UI_SETTING_KEYER_TUNE_TIMEOUT_S;
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_SETTING_KEYER_REPEAT_INTERVAL_S;
     case UI_EDIT_NONE:
@@ -1403,6 +1412,7 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
 {
     uint8_t row;
     char top[UI_COLS + 1];
+    char tune_line[UI_COLS + 1];
     const char *line6 = s_keyer_tx_text;
     const char *key_in = keyer_service_key_in_mode_label(keyer_service_get_key_in_mode());
     const char *key_out = keyer_service_key_out_mode_label(keyer_service_get_key_out_mode());
@@ -1416,16 +1426,14 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
         wpm = 99U;
     }
 
-    memset(top, ' ', UI_COLS);
-    memcpy(top, "Keyer", 5U);
-    ui_service_copy_right_aligned_field(&top[6], 5U, key_in);
-    ui_service_copy_right_aligned_field(&top[12], 5U, key_out);
-    top[18] = wpm >= 10U ? (char)('0' + (wpm / 10U)) : ' ';
-    top[19] = (char)('0' + (wpm % 10U));
-    top[UI_COLS] = '\0';
+    if (s_ui.keyer_tune_active) {
+        snprintf(top, sizeof(top), "Tune  %5.5s %5.5s %2u", key_in, key_out, (unsigned)wpm);
+    } else {
+        snprintf(top, sizeof(top), "Keyer %5.5s %5.5s %2u", key_in, key_out, (unsigned)wpm);
+    }
     ui_service_set_top_chars(screen, top, MINI_CW_SCREEN_COLOR_WHITE);
 
-    if (s_ui.keyer_shortcut_active) {
+    if (!s_ui.keyer_tune_active && s_ui.keyer_shortcut_active) {
         for (row = 0U; row < UI_KEYER_VISIBLE_LINES; ++row) {
             snprintf(screen->line[row],
                      sizeof(screen->line[row]),
@@ -1443,7 +1451,16 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
         }
     }
 
-    if (s_keyer_status_text[0] != '\0') {
+    if (s_ui.keyer_tune_active) {
+        if (keyer_service_get_tune_latched()) {
+            ui_service_set_text(tune_line, sizeof(tune_line), "Tune:T");
+        } else if (keyer_service_get_tune_output_active()) {
+            ui_service_set_text(tune_line, sizeof(tune_line), "Tune:Hold");
+        } else {
+            ui_service_set_text(tune_line, sizeof(tune_line), "Tune");
+        }
+        line6 = tune_line;
+    } else if (s_keyer_status_text[0] != '\0') {
         if (!ui_service_tick_reached(xTaskGetTickCount(), s_keyer_status_until_tick)) {
             line6 = s_keyer_status_text;
         } else {
@@ -1643,7 +1660,12 @@ static void ui_service_render_keyer_menu(void)
                                       keyer_service_get_tx_delay_s(),
                                       "s");
         ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "");
-        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "");
+        ui_service_format_value_line(screen.line[4],
+                                     sizeof(screen.line[4]),
+                                     5U,
+                                     "5 TuneTimeout:",
+                                     keyer_service_get_tune_timeout_s(),
+                                     "s");
         ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "");
     }
 
@@ -1855,6 +1877,7 @@ static void ui_service_set_mode_internal(ui_service_mode_t mode)
     if (s_ui.mode != UI_SERVICE_MODE_KEYER) {
         s_ui.keyer_shortcut_active = false;
         s_ui.keyer_shortcut_macro = 0U;
+        s_ui.keyer_tune_active = false;
     }
     ui_service_clear_edit();
     ESP_LOGI(TAG, "mode changed: %s", ui_service_mode_name(s_ui.mode));
@@ -1980,6 +2003,8 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
         } else if (s_ui.menu_page == 2U) {
             if (item == 3U) {
                 target = UI_EDIT_KEYER_TX_DELAY_S;
+            } else if (item == 5U) {
+                target = UI_EDIT_KEYER_TUNE_TIMEOUT_S;
             }
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {
@@ -2306,6 +2331,41 @@ static bool ui_service_emit_keyer_mute_toggle(char key, ui_input_event_t *out_ev
     return true;
 }
 
+static bool ui_service_handle_keyer_tune_char(char key, ui_input_event_t *out_event)
+{
+    if (s_ui.mode != UI_SERVICE_MODE_KEYER || s_ui.view != UI_VIEW_NORMAL) {
+        return false;
+    }
+
+    if (key == '\t') {
+        s_ui.keyer_tune_active = !s_ui.keyer_tune_active;
+        s_ui.keyer_shortcut_active = false;
+        s_ui.keyer_shortcut_macro = 0U;
+        s_keyer_status_text[0] = '\0';
+        ui_service_clear_edit();
+        ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_TUNE_CHANGED, key);
+        if (out_event != NULL) {
+            out_event->value = s_ui.keyer_tune_active ? 1 : 0;
+        }
+        return true;
+    }
+
+    if (!s_ui.keyer_tune_active) {
+        return false;
+    }
+
+    if (key == 't' || key == 'T') {
+        bool next = !keyer_service_get_tune_latched();
+        ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_TUNE_LATCH_CHANGED, key);
+        if (out_event != NULL) {
+            out_event->value = next ? 1 : 0;
+        }
+        return true;
+    }
+
+    return true;
+}
+
 static bool ui_service_handle_keyer_shortcut_char(char key, ui_input_event_t *out_event)
 {
     if (!s_ui.keyer_shortcut_active || s_ui.mode != UI_SERVICE_MODE_KEYER ||
@@ -2373,6 +2433,11 @@ ui_input_event_t ui_service_poll_input(void)
         return UI_EVENT_NONE;
     }
 
+    if (s_ui.mode == UI_SERVICE_MODE_KEYER && s_ui.view == UI_VIEW_NORMAL &&
+        s_ui.keyer_tune_active && port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
+        return UI_EVENT_NONE;
+    }
+
     if (port_event.type == UI_CARDPUTER_PORT_EVENT_OPT) {
         ui_service_toggle_mode_select();
         return UI_EVENT_NONE;
@@ -2412,6 +2477,13 @@ ui_input_event_t ui_service_poll_input(void)
 
     if (port_event.type != UI_CARDPUTER_PORT_EVENT_CHAR) {
         return UI_EVENT_NONE;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_KEYER && s_ui.view == UI_VIEW_NORMAL) {
+        ui_input_event_t tune_event = UI_EVENT_NONE;
+        if (ui_service_handle_keyer_tune_char(port_event.ch, &tune_event)) {
+            return tune_event;
+        }
     }
 
     if (ui_service_handle_keyer_fn_scroll(&port_event)) {

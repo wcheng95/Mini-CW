@@ -40,6 +40,8 @@ typedef enum {
     UI_INPUT_EVENT_KEYER_MACRO_SELECTED,
     UI_INPUT_EVENT_KEYER_SHORTCUT_CHANGED,
     UI_INPUT_EVENT_KEYER_CLEAR,
+    UI_INPUT_EVENT_KEYER_TUNE_CHANGED,
+    UI_INPUT_EVENT_KEYER_TUNE_LATCH_CHANGED,
 } ui_input_event_type_t;
 
 typedef enum {
@@ -76,6 +78,7 @@ typedef enum {
     UI_SETTING_KEYER_MESSAGE_4,
     UI_SETTING_KEYER_MESSAGE_5,
     UI_SETTING_KEYER_MUTE,
+    UI_SETTING_KEYER_TUNE_TIMEOUT_S,
 } ui_setting_target_t;
 
 #define UI_INPUT_EVENT_TEXT_MAX 127U
@@ -112,6 +115,8 @@ void ui_service_keyer_set_tx_text(const char *text);
 void ui_service_keyer_clear_tx_text(void);
 void ui_service_keyer_set_status(const char *text);
 bool ui_service_keyer_shortcut_active(void);
+void ui_service_keyer_set_tune_active(bool active);
+bool ui_service_keyer_tune_active(void);
 
 #ifdef __cplusplus
 }

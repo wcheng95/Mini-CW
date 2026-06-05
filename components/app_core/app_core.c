@@ -72,6 +72,12 @@ typedef struct {
     TickType_t macro_repeat_due;
     char macro_text[APP_KEYER_MACRO_TEXT_MAX + 1U];
     uint16_t macro_pos;
+
+    bool tune_active;
+    bool tune_timeout_pending;
+    TickType_t tune_timeout_due;
+    bool tune_last_latched;
+    bool tune_last_output_active;
 } app_keyer_state_t;
 
 static app_keyer_state_t s_keyer;
@@ -456,8 +462,83 @@ static void app_core_keyer_start_pending_macro_now(void)
     app_core_keyer_macro_continue();
 }
 
+static void app_core_keyer_sync_tune_ui(bool force)
+{
+    bool latched = s_keyer.tune_active && keyer_service_get_tune_latched();
+    bool output_active = s_keyer.tune_active && keyer_service_get_tune_output_active();
+
+    if (force || s_keyer.tune_last_latched != latched ||
+        s_keyer.tune_last_output_active != output_active) {
+        s_keyer.tune_last_latched = latched;
+        s_keyer.tune_last_output_active = output_active;
+        ui_service_refresh();
+    }
+}
+
+static void app_core_keyer_set_tune_active(bool active)
+{
+    if (active) {
+        app_core_keyer_cancel_macro();
+        app_core_keyer_clear_tx_buffer();
+        s_keyer.tune_active = true;
+        s_keyer.tune_timeout_pending = false;
+        keyer_service_set_tune_active(true);
+        ui_service_keyer_set_tune_active(true);
+        app_core_keyer_sync_tune_ui(true);
+        return;
+    }
+
+    s_keyer.tune_timeout_pending = false;
+    keyer_service_set_tune_latched(false);
+    keyer_service_set_tune_active(false);
+    s_keyer.tune_active = false;
+    ui_service_keyer_set_tune_active(false);
+    app_core_keyer_sync_tune_ui(true);
+}
+
+static void app_core_keyer_set_tune_latched(bool latched)
+{
+    uint8_t timeout_s;
+
+    if (!s_keyer.tune_active) {
+        return;
+    }
+
+    keyer_service_set_tune_latched(latched);
+    if (!latched) {
+        s_keyer.tune_timeout_pending = false;
+        app_core_keyer_sync_tune_ui(true);
+        return;
+    }
+
+    timeout_s = keyer_service_get_tune_timeout_s();
+    if (timeout_s == 0U) {
+        s_keyer.tune_timeout_pending = false;
+    } else {
+        s_keyer.tune_timeout_pending = true;
+        s_keyer.tune_timeout_due =
+            xTaskGetTickCount() + app_core_ms_to_delay_ticks((uint32_t)timeout_s * 1000U);
+    }
+    app_core_keyer_sync_tune_ui(true);
+}
+
 static void app_core_keyer_update(void)
 {
+    if (s_keyer.tune_active) {
+        if (s_keyer.tune_timeout_pending && !keyer_service_get_tune_latched()) {
+            s_keyer.tune_timeout_pending = false;
+        }
+
+        if (s_keyer.tune_timeout_pending &&
+            app_core_tick_reached(xTaskGetTickCount(), s_keyer.tune_timeout_due)) {
+            keyer_service_set_tune_latched(false);
+            s_keyer.tune_timeout_pending = false;
+        }
+
+        app_core_keyer_sync_tune_ui(false);
+        return;
+    }
+
     if (s_keyer.macro_pending_start &&
         app_core_tick_reached(xTaskGetTickCount(), s_keyer.macro_start_due)) {
         app_core_keyer_start_pending_macro_now();
@@ -566,6 +647,9 @@ static void app_core_handle_keyer_config_changed(const ui_input_event_t *event)
     switch (event->setting) {
     case UI_SETTING_KEYER_TX_DELAY_S:
         config.tx_delay_s = (uint8_t)event->value;
+        break;
+    case UI_SETTING_KEYER_TUNE_TIMEOUT_S:
+        config.tune_timeout_s = (uint8_t)event->value;
         break;
     case UI_SETTING_KEYER_REPEAT_INTERVAL_S:
         config.repeat_interval_s = (uint8_t)event->value;
@@ -837,7 +921,7 @@ static void app_core_handle_char_input(char key)
         cw_trainer_word_append_char(key);
     } else if (s_app.mode == APP_MODE_CALLSIGNS) {
         cw_trainer_callsign_append_char(key);
-    } else if (s_app.mode == APP_MODE_KEYER) {
+    } else if (s_app.mode == APP_MODE_KEYER && !s_keyer.tune_active) {
         app_core_keyer_append_tx_char(key);
     }
 
@@ -1022,6 +1106,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         } else if (s_app.mode == APP_MODE_CALLSIGNS) {
             cw_trainer_callsign_abort();
         } else {
+            if (s_keyer.tune_active) {
+                app_core_keyer_set_tune_active(false);
+            }
             app_core_keyer_cancel_macro();
             app_core_keyer_clear_tx_buffer();
             audio_service_stop_all();
@@ -1033,6 +1120,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
 
     if (event.type == UI_INPUT_EVENT_SLEEP_REQUEST) {
         ESP_LOGI(TAG, "sleep input received");
+        if (s_keyer.tune_active) {
+            app_core_keyer_set_tune_active(false);
+        }
         audio_service_stop_all();
         ui_service_prepare_for_sleep();
         vTaskDelay(pdMS_TO_TICKS(100));
@@ -1042,6 +1132,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
 
     switch (event.type) {
     case UI_INPUT_EVENT_MODE_CHANGED:
+        if (s_keyer.tune_active) {
+            app_core_keyer_set_tune_active(false);
+        }
         app_core_sync_mode_from_ui();
         ui_service_refresh();
         break;
@@ -1086,6 +1179,16 @@ static void app_core_handle_ui_event(ui_input_event_t event)
             app_core_keyer_clear_tx_buffer();
             ui_service_keyer_clear_decoded();
             ui_service_refresh();
+        }
+        break;
+    case UI_INPUT_EVENT_KEYER_TUNE_CHANGED:
+        if (s_app.mode == APP_MODE_KEYER) {
+            app_core_keyer_set_tune_active(event.value != 0);
+        }
+        break;
+    case UI_INPUT_EVENT_KEYER_TUNE_LATCH_CHANGED:
+        if (s_app.mode == APP_MODE_KEYER) {
+            app_core_keyer_set_tune_latched(event.value != 0);
         }
         break;
     case UI_INPUT_EVENT_LESSON_CONFIG_CHANGED:

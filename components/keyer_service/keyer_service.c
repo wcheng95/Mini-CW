@@ -41,6 +41,8 @@ static const char *TAG = "keyer_service";
 #define KEYER_TX_TEXT_MAX 255U
 #define KEYER_TX_DELAY_MIN_S 0U
 #define KEYER_TX_DELAY_MAX_S 99U
+#define KEYER_TUNE_TIMEOUT_MIN_S 0U
+#define KEYER_TUNE_TIMEOUT_MAX_S 20U
 #define KEYER_REPEAT_MIN_S 1U
 #define KEYER_REPEAT_MAX_S 99U
 
@@ -74,6 +76,10 @@ static bool s_key_out_gpio_ready;
 static bool s_straight_tone_on;
 static bool s_straight_key_down;
 static bool s_mute;
+static bool s_tune_active;
+static bool s_tune_latched;
+static bool s_tune_output_active;
+static bool s_tune_consume_until_release;
 static keyer_paddle_state_t s_paddle_state = KEYER_PADDLE_IDLE;
 static TickType_t s_paddle_ready_tick;
 static TickType_t s_paddle_element_end_tick;
@@ -109,6 +115,7 @@ static keyer_config_t s_config = {
     .key_out_mode = KEYER_KEY_OUT_PADDLE,
     .paddle_mode = KEYER_PADDLE_IAMBIC_B,
     .tx_delay_s = 1U,
+    .tune_timeout_s = 10U,
     .repeat_interval_s = 6U,
     .message = {
         "CQ SOTA DE AG6AQ",
@@ -515,6 +522,38 @@ static void keyer_stop_straight_tone(void)
     s_straight_tone_on = false;
 }
 
+static void keyer_start_tune_output(void)
+{
+    if (s_tune_output_active) {
+        return;
+    }
+
+    keyer_set_key_out_straight(true);
+    if (!s_mute) {
+        audio_service_tone_on();
+        s_straight_tone_on = true;
+    }
+    s_tune_output_active = true;
+}
+
+static void keyer_stop_tune_output(void)
+{
+    if (!s_tune_output_active) {
+        return;
+    }
+
+    keyer_stop_straight_tone();
+    keyer_set_key_out_straight(false);
+    s_tune_output_active = false;
+}
+
+static void keyer_clear_tune_state(void)
+{
+    s_tune_latched = false;
+    s_tune_consume_until_release = false;
+    keyer_stop_tune_output();
+}
+
 static void keyer_reset_straight_state(void)
 {
     keyer_stop_straight_tone();
@@ -816,6 +855,41 @@ static void keyer_update_bug_mode(bool dit_pressed,
     }
 
     keyer_clear_iambic_state();
+}
+
+static void keyer_update_tune_mode(bool tip_pressed, bool ring_pressed)
+{
+    bool any_pressed = tip_pressed || ring_pressed;
+
+    keyer_clear_iambic_state();
+    s_straight_key_down = false;
+
+    if (s_tune_consume_until_release) {
+        if (any_pressed) {
+            keyer_stop_tune_output();
+            return;
+        }
+
+        s_tune_consume_until_release = false;
+    }
+
+    if (s_tune_latched) {
+        if (any_pressed) {
+            s_tune_latched = false;
+            s_tune_consume_until_release = true;
+            keyer_stop_tune_output();
+            return;
+        }
+
+        keyer_start_tune_output();
+        return;
+    }
+
+    if (any_pressed) {
+        keyer_start_tune_output();
+    } else {
+        keyer_stop_tune_output();
+    }
 }
 
 static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed, bool ring_pressed)
@@ -1155,6 +1229,18 @@ void keyer_service_set_tx_delay_s(uint8_t delay_s)
     ESP_LOGI(TAG, "tx delay: %u s", (unsigned)s_config.tx_delay_s);
 }
 
+uint8_t keyer_service_get_tune_timeout_s(void)
+{
+    return s_config.tune_timeout_s;
+}
+
+void keyer_service_set_tune_timeout_s(uint8_t timeout_s)
+{
+    s_config.tune_timeout_s =
+        keyer_clamp_u8(timeout_s, KEYER_TUNE_TIMEOUT_MIN_S, KEYER_TUNE_TIMEOUT_MAX_S);
+    ESP_LOGI(TAG, "tune timeout: %u s", (unsigned)s_config.tune_timeout_s);
+}
+
 uint8_t keyer_service_get_repeat_interval_s(void)
 {
     return s_config.repeat_interval_s;
@@ -1211,6 +1297,10 @@ void keyer_service_set_config(const keyer_config_t *config)
     s_config.paddle_mode = keyer_clamp_paddle_mode(s_config.paddle_mode);
     s_config.tx_delay_s =
         keyer_clamp_u8(s_config.tx_delay_s, KEYER_TX_DELAY_MIN_S, KEYER_TX_DELAY_MAX_S);
+    s_config.tune_timeout_s =
+        keyer_clamp_u8(s_config.tune_timeout_s,
+                       KEYER_TUNE_TIMEOUT_MIN_S,
+                       KEYER_TUNE_TIMEOUT_MAX_S);
     s_config.repeat_interval_s =
         keyer_clamp_u8(s_config.repeat_interval_s, KEYER_REPEAT_MIN_S, KEYER_REPEAT_MAX_S);
     for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
@@ -1232,6 +1322,9 @@ void keyer_service_set_mute(bool mute)
     if (s_mute) {
         audio_service_tone_off();
         s_straight_tone_on = false;
+    } else if (s_tune_output_active && !s_straight_tone_on) {
+        audio_service_tone_on();
+        s_straight_tone_on = true;
     }
     ESP_LOGI(TAG, "mute: %s", s_mute ? "on" : "off");
 }
@@ -1356,6 +1449,60 @@ bool keyer_service_is_tx_active(void)
     return keyer_tx_playback_active();
 }
 
+void keyer_service_set_tune_active(bool active)
+{
+    if (!active) {
+        keyer_clear_tune_state();
+        s_tune_active = false;
+        keyer_reset_input_state();
+        ESP_LOGI(TAG, "tune mode: off");
+        return;
+    }
+
+    if (keyer_tx_playback_active()) {
+        keyer_stop_tx_playback(true);
+    }
+
+    keyer_reset_input_state();
+    keyer_clear_tune_state();
+    keyer_clear_events();
+    s_tune_active = true;
+    ESP_LOGI(TAG, "tune mode: on");
+}
+
+bool keyer_service_get_tune_active(void)
+{
+    return s_tune_active;
+}
+
+void keyer_service_set_tune_latched(bool latched)
+{
+    if (!s_tune_active) {
+        latched = false;
+    }
+
+    s_tune_latched = latched;
+    s_tune_consume_until_release = false;
+
+    if (s_tune_latched) {
+        keyer_start_tune_output();
+    } else {
+        keyer_stop_tune_output();
+    }
+
+    ESP_LOGI(TAG, "tune latch: %s", s_tune_latched ? "on" : "off");
+}
+
+bool keyer_service_get_tune_latched(void)
+{
+    return s_tune_latched;
+}
+
+bool keyer_service_get_tune_output_active(void)
+{
+    return s_tune_output_active;
+}
+
 void keyer_service_update(void)
 {
     bool tip_pressed;
@@ -1366,6 +1513,11 @@ void keyer_service_update(void)
     keyer_update_tx(now);
     keyer_read_paddle_inputs(&tip_pressed, &ring_pressed);
     keyer_filter_cancel_ignored_inputs(&tip_pressed, &ring_pressed);
+
+    if (s_tune_active) {
+        keyer_update_tune_mode(tip_pressed, ring_pressed);
+        return;
+    }
 
     switch (s_key_in_mode) {
     case KEYER_KEY_IN_PADDLE:

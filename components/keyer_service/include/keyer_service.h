@@ -50,6 +50,7 @@ typedef struct {
     keyer_key_out_mode_t key_out_mode;
     keyer_paddle_mode_t paddle_mode;
     uint8_t tx_delay_s;
+    uint8_t tune_timeout_s;
     uint8_t repeat_interval_s;
     char message[KEYER_MESSAGE_COUNT][KEYER_MESSAGE_MAX_LEN + 1U];
 } keyer_config_t;
@@ -87,6 +88,8 @@ void keyer_service_set_paddle_mode(keyer_paddle_mode_t mode);
 void keyer_service_cycle_paddle_mode(int direction);
 uint8_t keyer_service_get_tx_delay_s(void);
 void keyer_service_set_tx_delay_s(uint8_t delay_s);
+uint8_t keyer_service_get_tune_timeout_s(void);
+void keyer_service_set_tune_timeout_s(uint8_t timeout_s);
 uint8_t keyer_service_get_repeat_interval_s(void);
 void keyer_service_set_repeat_interval_s(uint8_t interval_s);
 const char *keyer_service_get_message(uint8_t index);
@@ -109,6 +112,11 @@ uint16_t keyer_service_get_dit_ms(void);
 void keyer_service_play_text(const char *text);
 void keyer_service_stop_tx(void);
 bool keyer_service_is_tx_active(void);
+void keyer_service_set_tune_active(bool active);
+bool keyer_service_get_tune_active(void);
+void keyer_service_set_tune_latched(bool latched);
+bool keyer_service_get_tune_latched(void);
+bool keyer_service_get_tune_output_active(void);
 void keyer_service_update(void);
 keyer_event_t keyer_service_poll_event(void);
 
