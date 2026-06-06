@@ -126,6 +126,7 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
     }
 
     if (ch != '\0') {
+        out_event->ch = ch;
         s_last_reported_fn = false;
         s_last_reported_ctrl = false;
         s_last_reported_opt = false;
@@ -146,7 +147,6 @@ bool ui_cardputer_port_poll_input(ui_cardputer_port_event_t *out_event)
         s_last_reported_key_alt = keys.alt;
         s_last_reported_key_caps_lock = out_event->caps_lock;
         out_event->type = UI_CARDPUTER_PORT_EVENT_CHAR;
-        out_event->ch = ch;
         ESP_LOGI(TAG, "keyboard char: '%c'", ch);
         return true;
     }

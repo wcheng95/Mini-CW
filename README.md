@@ -36,7 +36,9 @@ Backspace edit typed copy
 
 Settings screens use numbered rows. Press the row number to edit a value, type
 digits or use `,` and `/` to decrease/increase, then press Enter to apply.
-Backtick cancels an edit.
+Text fields store typed letters as uppercase; use Fn+`,` and Fn+`/` to move the
+text cursor left/right while editing. Fn+`;` and Fn+`.` remain available for
+up/down navigation behavior. Backtick cancels an edit.
 
 ## Modes
 

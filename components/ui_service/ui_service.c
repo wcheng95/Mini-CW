@@ -85,6 +85,10 @@ typedef struct {
     uint8_t edit_item;
     char edit_buf[4];
     char text_edit_buf[KEYER_MESSAGE_MAX_LEN + 1U];
+    size_t text_edit_cursor;
+    bool text_edit_cursor_repeat_active;
+    char text_edit_cursor_repeat_key;
+    TickType_t text_edit_cursor_repeat_due;
     bool edit_user_digits;
     bool keyer_shortcut_active;
     uint8_t keyer_shortcut_macro;
@@ -109,6 +113,10 @@ static ui_service_state_t s_ui = {
     .edit_item = 0U,
     .edit_buf = "",
     .text_edit_buf = "",
+    .text_edit_cursor = 0U,
+    .text_edit_cursor_repeat_active = false,
+    .text_edit_cursor_repeat_key = '\0',
+    .text_edit_cursor_repeat_due = 0,
     .edit_user_digits = false,
     .keyer_shortcut_active = false,
     .keyer_shortcut_macro = 0U,
@@ -136,6 +144,8 @@ static bool s_cardputer_ready;
 #define UI_KEYER_VISIBLE_LINES 5U
 #define UI_KEYER_HISTORY_LINES 64U
 #define UI_KEYER_HISTORY_CAPACITY (UI_KEYER_HISTORY_LINES * UI_COLS)
+#define UI_TEXT_CURSOR_REPEAT_DELAY_MS 400U
+#define UI_TEXT_CURSOR_REPEAT_INTERVAL_MS 100U
 
 static char s_keyer_history[UI_KEYER_HISTORY_CAPACITY + 1U];
 static uint16_t s_keyer_history_len;
@@ -232,6 +242,50 @@ static bool ui_service_is_editing_item(uint8_t item)
     return s_ui.edit_target != UI_EDIT_NONE && s_ui.edit_item == item;
 }
 
+static bool ui_service_is_text_editing(void)
+{
+    return s_ui.text_edit_target != UI_TEXT_EDIT_NONE;
+}
+
+static void ui_service_reset_text_cursor_repeat(void)
+{
+    s_ui.text_edit_cursor_repeat_active = false;
+    s_ui.text_edit_cursor_repeat_key = '\0';
+    s_ui.text_edit_cursor_repeat_due = 0;
+}
+
+static size_t ui_service_text_edit_len(void)
+{
+    return strlen(s_ui.text_edit_buf);
+}
+
+static void ui_service_clamp_text_cursor(void)
+{
+    size_t len = ui_service_text_edit_len();
+
+    if (s_ui.text_edit_cursor > len) {
+        s_ui.text_edit_cursor = len;
+    }
+}
+
+static void ui_service_move_text_cursor(int delta)
+{
+    size_t len;
+
+    ui_service_clamp_text_cursor();
+    len = ui_service_text_edit_len();
+
+    if (delta < 0) {
+        if (s_ui.text_edit_cursor > 0U) {
+            --s_ui.text_edit_cursor;
+        }
+    } else if (delta > 0) {
+        if (s_ui.text_edit_cursor < len) {
+            ++s_ui.text_edit_cursor;
+        }
+    }
+}
+
 static void ui_service_clear_edit(void)
 {
     s_ui.edit_target = UI_EDIT_NONE;
@@ -239,6 +293,8 @@ static void ui_service_clear_edit(void)
     s_ui.edit_item = 0U;
     s_ui.edit_buf[0] = '\0';
     s_ui.text_edit_buf[0] = '\0';
+    s_ui.text_edit_cursor = 0U;
+    ui_service_reset_text_cursor_repeat();
     s_ui.edit_user_digits = false;
 }
 
@@ -921,6 +977,8 @@ static void ui_service_begin_text_edit(uint8_t item, ui_text_edit_target_t targe
              sizeof(s_ui.text_edit_buf),
              "%s",
              keyer_service_get_message(index));
+    s_ui.text_edit_cursor = strlen(s_ui.text_edit_buf);
+    ui_service_reset_text_cursor_repeat();
     ESP_LOGI(TAG, "message edit started: item=%u", (unsigned)item);
 }
 
@@ -946,6 +1004,7 @@ static bool ui_service_commit_text_edit(ui_input_event_t *out_event, char key)
 static bool ui_service_handle_text_edit_char(char key, ui_input_event_t *out_event)
 {
     size_t len;
+    char normalized;
 
     if (s_ui.text_edit_target == UI_TEXT_EDIT_NONE) {
         return false;
@@ -961,9 +1020,13 @@ static bool ui_service_handle_text_edit_char(char key, ui_input_event_t *out_eve
     }
 
     if (key == '\b' || key == 0x7f) {
+        ui_service_clamp_text_cursor();
         len = strlen(s_ui.text_edit_buf);
-        if (len > 0U) {
-            s_ui.text_edit_buf[len - 1U] = '\0';
+        if (s_ui.text_edit_cursor > 0U) {
+            memmove(&s_ui.text_edit_buf[s_ui.text_edit_cursor - 1U],
+                    &s_ui.text_edit_buf[s_ui.text_edit_cursor],
+                    len - s_ui.text_edit_cursor + 1U);
+            --s_ui.text_edit_cursor;
         }
         return true;
     }
@@ -972,13 +1035,18 @@ static bool ui_service_handle_text_edit_char(char key, ui_input_event_t *out_eve
         return true;
     }
 
+    normalized = (char)toupper((unsigned char)key);
     len = strlen(s_ui.text_edit_buf);
     if (len + 1U >= sizeof(s_ui.text_edit_buf)) {
         return true;
     }
 
-    s_ui.text_edit_buf[len] = key;
-    s_ui.text_edit_buf[len + 1U] = '\0';
+    ui_service_clamp_text_cursor();
+    memmove(&s_ui.text_edit_buf[s_ui.text_edit_cursor + 1U],
+            &s_ui.text_edit_buf[s_ui.text_edit_cursor],
+            len - s_ui.text_edit_cursor + 1U);
+    s_ui.text_edit_buf[s_ui.text_edit_cursor] = normalized;
+    ++s_ui.text_edit_cursor;
     return true;
 }
 
@@ -1034,6 +1102,64 @@ static void ui_service_copy_tail(char *dest, size_t dest_size, const char *text,
     }
 
     snprintf(dest, dest_size, "%s", &text[start]);
+}
+
+static void ui_service_format_text_edit_line(char *dest, size_t dest_size)
+{
+    const char *text = s_ui.text_edit_buf;
+    size_t len;
+    size_t visible_cols;
+    size_t text_cols;
+    size_t start = 0U;
+    size_t marker_pos;
+    size_t out = 0U;
+    size_t src;
+
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (dest_size <= 1U) {
+        return;
+    }
+
+    ui_service_clamp_text_cursor();
+    len = ui_service_text_edit_len();
+    visible_cols = dest_size - 1U;
+    if (visible_cols > UI_COLS) {
+        visible_cols = UI_COLS;
+    }
+
+    if (visible_cols == 1U) {
+        dest[0] = '_';
+        dest[1] = '\0';
+        return;
+    }
+
+    text_cols = visible_cols - 1U;
+    if (len > text_cols) {
+        if (s_ui.text_edit_cursor > text_cols / 2U) {
+            start = s_ui.text_edit_cursor - (text_cols / 2U);
+        }
+        if (start + text_cols > len) {
+            start = len - text_cols;
+        }
+    }
+
+    marker_pos = s_ui.text_edit_cursor - start;
+    if (marker_pos > text_cols) {
+        marker_pos = text_cols;
+    }
+
+    for (src = start; out < marker_pos && src < len; ++src) {
+        dest[out++] = text[src];
+    }
+    dest[out++] = '_';
+    for (src = start + marker_pos; out < visible_cols && src < len; ++src) {
+        dest[out++] = text[src];
+    }
+    dest[out] = '\0';
 }
 
 static void ui_service_format_accuracy_tenths(char *dest, size_t dest_size, uint16_t tenths)
@@ -1628,10 +1754,7 @@ static void ui_service_render_keyer_menu(void)
         for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
             const char *message = keyer_service_get_message(i);
             if (s_ui.text_edit_target == ui_service_message_text_target(i)) {
-                ui_service_copy_tail(screen.line[i],
-                                     sizeof(screen.line[i]),
-                                     s_ui.text_edit_buf,
-                                     strlen(s_ui.text_edit_buf));
+                ui_service_format_text_edit_line(screen.line[i], sizeof(screen.line[i]));
             } else {
                 snprintf(screen.line[i],
                          sizeof(screen.line[i]),
@@ -2293,6 +2416,59 @@ static bool ui_service_handle_keyer_fn_scroll(const ui_cardputer_port_event_t *p
     return false;
 }
 
+static bool ui_service_is_text_cursor_key(char key)
+{
+    return key == ',' || key == '/';
+}
+
+static bool ui_service_handle_text_cursor_input(const ui_cardputer_port_event_t *port_event,
+                                                bool port_event_ready)
+{
+    TickType_t now;
+    int delta;
+
+    if (!ui_service_is_text_editing()) {
+        ui_service_reset_text_cursor_repeat();
+        return false;
+    }
+
+    if (port_event == NULL || !port_event->fn || !ui_service_is_text_cursor_key(port_event->ch)) {
+        ui_service_reset_text_cursor_repeat();
+        return false;
+    }
+
+    now = xTaskGetTickCount();
+    delta = port_event->ch == ',' ? -1 : 1;
+
+    if (port_event_ready && port_event->type == UI_CARDPUTER_PORT_EVENT_CHAR) {
+        ui_service_move_text_cursor(delta);
+        s_ui.text_edit_cursor_repeat_active = true;
+        s_ui.text_edit_cursor_repeat_key = port_event->ch;
+        s_ui.text_edit_cursor_repeat_due =
+            now + pdMS_TO_TICKS(UI_TEXT_CURSOR_REPEAT_DELAY_MS);
+        ui_service_render_current_view();
+        return true;
+    }
+
+    if (!s_ui.text_edit_cursor_repeat_active ||
+        s_ui.text_edit_cursor_repeat_key != port_event->ch) {
+        s_ui.text_edit_cursor_repeat_active = true;
+        s_ui.text_edit_cursor_repeat_key = port_event->ch;
+        s_ui.text_edit_cursor_repeat_due =
+            now + pdMS_TO_TICKS(UI_TEXT_CURSOR_REPEAT_DELAY_MS);
+        return true;
+    }
+
+    if (ui_service_tick_reached(now, s_ui.text_edit_cursor_repeat_due)) {
+        ui_service_move_text_cursor(delta);
+        s_ui.text_edit_cursor_repeat_due =
+            now + pdMS_TO_TICKS(UI_TEXT_CURSOR_REPEAT_INTERVAL_MS);
+        ui_service_render_current_view();
+    }
+
+    return true;
+}
+
 static bool ui_service_emit_keyer_wpm_delta(char key, ui_input_event_t *out_event)
 {
     int next;
@@ -2428,7 +2604,13 @@ void ui_service_prepare_for_sleep(void)
 ui_input_event_t ui_service_poll_input(void)
 {
     ui_cardputer_port_event_t port_event;
-    if (!ui_cardputer_port_poll_input(&port_event)) {
+    bool port_event_ready = ui_cardputer_port_poll_input(&port_event);
+
+    if (ui_service_handle_text_cursor_input(&port_event, port_event_ready)) {
+        return UI_EVENT_NONE;
+    }
+
+    if (!port_event_ready) {
         return UI_EVENT_NONE;
     }
 
