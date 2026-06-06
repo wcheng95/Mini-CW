@@ -74,6 +74,7 @@ typedef enum {
     UI_TEXT_EDIT_KEYER_MESSAGE_3,
     UI_TEXT_EDIT_KEYER_MESSAGE_4,
     UI_TEXT_EDIT_KEYER_MESSAGE_5,
+    UI_TEXT_EDIT_KEYER_MYCALL,
 } ui_text_edit_target_t;
 
 typedef struct {
@@ -257,6 +258,20 @@ static void ui_service_reset_text_cursor_repeat(void)
 static size_t ui_service_text_edit_len(void)
 {
     return strlen(s_ui.text_edit_buf);
+}
+
+static size_t ui_service_text_edit_max_len(void)
+{
+    if (s_ui.text_edit_target == UI_TEXT_EDIT_KEYER_MYCALL) {
+        return KEYER_MYCALL_MAX_LEN;
+    }
+
+    return KEYER_MESSAGE_MAX_LEN;
+}
+
+static bool ui_service_keyer_mycall_char(char ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/';
 }
 
 static void ui_service_clamp_text_cursor(void)
@@ -956,6 +971,8 @@ static ui_setting_target_t ui_service_text_edit_setting_target(ui_text_edit_targ
         return UI_SETTING_KEYER_MESSAGE_4;
     case UI_TEXT_EDIT_KEYER_MESSAGE_5:
         return UI_SETTING_KEYER_MESSAGE_5;
+    case UI_TEXT_EDIT_KEYER_MYCALL:
+        return UI_SETTING_KEYER_MYCALL;
     case UI_TEXT_EDIT_NONE:
     default:
         return UI_SETTING_NONE;
@@ -965,8 +982,17 @@ static ui_setting_target_t ui_service_text_edit_setting_target(ui_text_edit_targ
 static void ui_service_begin_text_edit(uint8_t item, ui_text_edit_target_t target)
 {
     uint8_t index = ui_service_text_edit_message_index(target);
+    const char *text = NULL;
 
-    if (target == UI_TEXT_EDIT_NONE || index >= KEYER_MESSAGE_COUNT) {
+    if (target == UI_TEXT_EDIT_NONE) {
+        return;
+    }
+
+    if (target == UI_TEXT_EDIT_KEYER_MYCALL) {
+        text = keyer_service_get_mycall();
+    } else if (index < KEYER_MESSAGE_COUNT) {
+        text = keyer_service_get_message(index);
+    } else {
         return;
     }
 
@@ -976,10 +1002,10 @@ static void ui_service_begin_text_edit(uint8_t item, ui_text_edit_target_t targe
     snprintf(s_ui.text_edit_buf,
              sizeof(s_ui.text_edit_buf),
              "%s",
-             keyer_service_get_message(index));
+             text);
     s_ui.text_edit_cursor = strlen(s_ui.text_edit_buf);
     ui_service_reset_text_cursor_repeat();
-    ESP_LOGI(TAG, "message edit started: item=%u", (unsigned)item);
+    ESP_LOGI(TAG, "text edit started: item=%u", (unsigned)item);
 }
 
 static bool ui_service_commit_text_edit(ui_input_event_t *out_event, char key)
@@ -996,7 +1022,7 @@ static bool ui_service_commit_text_edit(ui_input_event_t *out_event, char key)
         snprintf(out_event->text, sizeof(out_event->text), "%s", s_ui.text_edit_buf);
     }
 
-    ESP_LOGI(TAG, "message edit committed");
+    ESP_LOGI(TAG, "text edit committed");
     ui_service_clear_edit();
     return true;
 }
@@ -1036,8 +1062,13 @@ static bool ui_service_handle_text_edit_char(char key, ui_input_event_t *out_eve
     }
 
     normalized = (char)toupper((unsigned char)key);
+    if (s_ui.text_edit_target == UI_TEXT_EDIT_KEYER_MYCALL &&
+        !ui_service_keyer_mycall_char(normalized)) {
+        return true;
+    }
+
     len = strlen(s_ui.text_edit_buf);
-    if (len + 1U >= sizeof(s_ui.text_edit_buf)) {
+    if (len >= ui_service_text_edit_max_len() || len + 1U >= sizeof(s_ui.text_edit_buf)) {
         return true;
     }
 
@@ -1542,6 +1573,7 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
     const char *line6 = s_keyer_tx_text;
     const char *key_in = keyer_service_key_in_mode_label(keyer_service_get_key_in_mode());
     const char *key_out = keyer_service_key_out_mode_label(keyer_service_get_key_out_mode());
+    const char *op_name = keyer_service_get_op_name();
     uint8_t wpm = keyer_service_get_key_in_wpm();
 
     if (screen == NULL) {
@@ -1552,7 +1584,9 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
         wpm = 99U;
     }
 
-    if (s_ui.keyer_tune_active) {
+    if (!s_ui.keyer_tune_active && op_name != NULL && op_name[0] != '\0') {
+        snprintf(top, sizeof(top), "Keyer %-11.11s %2u", op_name, (unsigned)wpm);
+    } else if (s_ui.keyer_tune_active) {
         snprintf(top, sizeof(top), "Tune  %5.5s %5.5s %2u", key_in, key_out, (unsigned)wpm);
     } else {
         snprintf(top, sizeof(top), "Keyer %5.5s %5.5s %2u", key_in, key_out, (unsigned)wpm);
@@ -1775,20 +1809,27 @@ static void ui_service_render_keyer_menu(void)
                  sizeof(screen.line[0]),
                  "1 Paddle:%s",
                  keyer_service_paddle_mode_label(keyer_service_get_paddle_mode()));
-        ui_service_set_text(screen.line[1], sizeof(screen.line[1]), "");
-        ui_service_format_value_line(screen.line[2],
-                                      sizeof(screen.line[2]),
-                                      3U,
-                                      "3 txDelay:",
+        ui_service_format_value_line(screen.line[1],
+                                      sizeof(screen.line[1]),
+                                      2U,
+                                      "2 txDelay:",
                                       keyer_service_get_tx_delay_s(),
                                       "s");
-        ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "");
-        ui_service_format_value_line(screen.line[4],
-                                     sizeof(screen.line[4]),
-                                     5U,
-                                     "5 TuneTimeout:",
+        ui_service_format_value_line(screen.line[2],
+                                     sizeof(screen.line[2]),
+                                     3U,
+                                     "3 TuneTimeout:",
                                      keyer_service_get_tune_timeout_s(),
                                      "s");
+        if (s_ui.text_edit_target == UI_TEXT_EDIT_KEYER_MYCALL) {
+            ui_service_format_text_edit_line(screen.line[3], sizeof(screen.line[3]));
+        } else {
+            snprintf(screen.line[3],
+                     sizeof(screen.line[3]),
+                     "4 myCall:%.11s",
+                     keyer_service_get_mycall());
+        }
+        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "");
         ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "");
     }
 
@@ -2124,9 +2165,9 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
                 target = UI_EDIT_KEYER_REPEAT_INTERVAL_S;
             }
         } else if (s_ui.menu_page == 2U) {
-            if (item == 3U) {
+            if (item == 2U) {
                 target = UI_EDIT_KEYER_TX_DELAY_S;
-            } else if (item == 5U) {
+            } else if (item == 3U) {
                 target = UI_EDIT_KEYER_TUNE_TIMEOUT_S;
             }
         }
@@ -2282,6 +2323,11 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
             out_event->setting = UI_SETTING_KEYER_PADDLE_MODE;
             out_event->delta = 1;
         }
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_KEYER && s_ui.menu_page == 2U && item == 4U) {
+        ui_service_begin_text_edit(item, UI_TEXT_EDIT_KEYER_MYCALL);
         return true;
     }
 

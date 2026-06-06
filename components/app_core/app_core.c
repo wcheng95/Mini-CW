@@ -191,6 +191,16 @@ static void app_core_apply_system_config(const storage_system_config_t *config)
     keyer_service_set_key_in_wpm(config->key_in_wpm);
 }
 
+static void app_core_reload_qsocalls(void)
+{
+    keyer_op_entry_t *entries = NULL;
+    size_t count = 0U;
+
+    if (storage_qsocalls_load(&entries, &count)) {
+        keyer_service_set_op_table(entries, count);
+    }
+}
+
 static void app_core_load_persisted_settings(void)
 {
     storage_system_config_t system_config;
@@ -241,6 +251,8 @@ static void app_core_load_persisted_settings(void)
     if (storage_plaintext_load(&plaintext_config, &plaintext_result)) {
         cw_trainer_plaintext_load_persisted(&plaintext_config, &plaintext_result);
     }
+
+    app_core_reload_qsocalls();
 }
 
 static void app_core_handle_lesson_select(void)
@@ -390,6 +402,10 @@ static void app_core_keyer_append_tx_char(char key)
         return;
     }
 
+    if (insert_space) {
+        keyer_service_op_feed_char(' ');
+    }
+    keyer_service_op_feed_char(normalized);
     s_keyer.last_append_was_message = false;
     app_core_keyer_sync_tx_display(true);
     app_core_keyer_schedule_tx();
@@ -408,6 +424,7 @@ static void app_core_keyer_backspace_tx(void)
 
 static void app_core_keyer_append_message(uint8_t message_index)
 {
+    const char *message;
     bool insert_space;
     bool repeat_m1;
 
@@ -421,12 +438,16 @@ static void app_core_keyer_append_message(uint8_t message_index)
     }
 
     insert_space = keyer_service_tx_has_text();
-    if (!keyer_service_tx_append_text(keyer_service_get_message((uint8_t)(message_index - 1U)),
-                                      insert_space)) {
+    message = keyer_service_get_message((uint8_t)(message_index - 1U));
+    if (!keyer_service_tx_append_text(message, insert_space)) {
         ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
+    if (insert_space) {
+        keyer_service_op_feed_char(' ');
+    }
+    keyer_service_op_feed_text(message);
     if (repeat_m1) {
         s_keyer.m1_repeat_active = true;
         s_keyer.m1_repeat_waiting = false;
@@ -438,6 +459,8 @@ static void app_core_keyer_append_message(uint8_t message_index)
 
 static void app_core_keyer_repeat_update(void)
 {
+    const char *message;
+
     if (!s_keyer.m1_repeat_active || s_keyer.tx_pending ||
         keyer_service_is_tx_active() || keyer_service_tx_has_text()) {
         if (keyer_service_is_tx_active() || keyer_service_tx_has_text() || s_keyer.tx_pending) {
@@ -459,11 +482,13 @@ static void app_core_keyer_repeat_update(void)
     }
 
     s_keyer.m1_repeat_waiting = false;
-    if (!keyer_service_tx_append_text(keyer_service_get_message(0U), false)) {
+    message = keyer_service_get_message(0U);
+    if (!keyer_service_tx_append_text(message, false)) {
         ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
+    keyer_service_op_feed_text(message);
     s_keyer.last_append_was_message = true;
     app_core_keyer_sync_tx_display(true);
     app_core_keyer_start_tx_now();
@@ -655,6 +680,13 @@ static void app_core_handle_keyer_config_changed(const ui_input_event_t *event)
         break;
     case UI_SETTING_KEYER_REPEAT_INTERVAL_S:
         config.repeat_interval_s = (uint8_t)event->value;
+        break;
+    case UI_SETTING_KEYER_MYCALL:
+        snprintf(config.mycall,
+                 sizeof(config.mycall),
+                 "%.*s",
+                 (int)KEYER_MYCALL_MAX_LEN,
+                 event->text);
         break;
     case UI_SETTING_KEYER_MESSAGE_1:
     case UI_SETTING_KEYER_MESSAGE_2:
@@ -1011,9 +1043,11 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
 
     switch (event->type) {
     case KEYER_EVENT_CHAR_COMPLETE:
+        keyer_service_op_feed_char(event->decoded_char);
         ui_service_keyer_append_decoded_char(event->decoded_char);
         return true;
     case KEYER_EVENT_WORD_SPACE:
+        keyer_service_op_feed_char(' ');
         ui_service_keyer_append_decoded_char(' ');
         return true;
     case KEYER_EVENT_BACKSPACE:
@@ -1136,13 +1170,18 @@ static void app_core_handle_ui_event(ui_input_event_t event)
     }
 
     switch (event.type) {
-    case UI_INPUT_EVENT_MODE_CHANGED:
+    case UI_INPUT_EVENT_MODE_CHANGED: {
+        bool was_keyer = s_app.mode == APP_MODE_KEYER;
         if (s_keyer.tune_active) {
             app_core_keyer_set_tune_active(false);
         }
         app_core_sync_mode_from_ui();
+        if (was_keyer && s_app.mode != APP_MODE_KEYER) {
+            keyer_service_clear_op_name();
+        }
         ui_service_refresh();
         break;
+    }
     case UI_INPUT_EVENT_VOLUME_CHANGED:
         app_core_handle_volume_changed(&event);
         break;

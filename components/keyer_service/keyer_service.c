@@ -21,6 +21,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *TAG = "keyer_service";
@@ -45,6 +46,8 @@ static const char *TAG = "keyer_service";
 #define KEYER_TUNE_TIMEOUT_MAX_S 20U
 #define KEYER_REPEAT_MIN_S 1U
 #define KEYER_REPEAT_MAX_S 99U
+#define KEYER_OP_CANDIDATE_MAX_LEN 12U
+#define KEYER_OP_ROLLING_LEN 16U
 
 typedef enum {
     KEYER_PADDLE_IDLE = 0,
@@ -112,6 +115,14 @@ static uint8_t s_tx_pattern_pos;
 static keyer_tx_state_t s_tx_state = KEYER_TX_IDLE;
 static TickType_t s_tx_due_tick;
 static uint32_t s_tx_revision;
+static keyer_op_entry_t *s_op_entries;
+static size_t s_op_entry_count;
+static char s_op_name[KEYER_OP_NAME_MAX_LEN + 1U];
+static char s_op_candidate[KEYER_OP_CANDIDATE_MAX_LEN + 1U];
+static uint8_t s_op_candidate_len;
+static bool s_op_candidate_has_digit;
+static bool s_op_candidate_overflow;
+static char s_op_rolling[KEYER_OP_ROLLING_LEN + 1U];
 
 static keyer_config_t s_config = {
     .key_out_mode = KEYER_KEY_OUT_PADDLE,
@@ -119,6 +130,7 @@ static keyer_config_t s_config = {
     .tx_delay_s = 1U,
     .tune_timeout_s = 10U,
     .repeat_interval_s = 6U,
+    .mycall = "AG6AQ",
     .message = {
         "CQ SOTA DE AG6AQ",
         "TU UR CA CA BK",
@@ -230,6 +242,193 @@ static uint8_t keyer_clamp_u8(uint8_t value, uint8_t min_value, uint8_t max_valu
     }
 
     return value;
+}
+
+static bool keyer_op_candidate_char(char ch)
+{
+    return (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/';
+}
+
+static bool keyer_op_text_has_digit(const char *text, size_t len)
+{
+    if (text == NULL) {
+        return false;
+    }
+
+    for (size_t i = 0U; i < len; ++i) {
+        if (text[i] >= '0' && text[i] <= '9') {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void keyer_copy_mycall(char *destination, const char *source)
+{
+    size_t out = 0U;
+
+    if (destination == NULL) {
+        return;
+    }
+
+    if (source == NULL) {
+        destination[0] = '\0';
+        return;
+    }
+
+    while (*source != '\0' && out < KEYER_MYCALL_MAX_LEN) {
+        char ch = (char)toupper((unsigned char)*source++);
+        if (keyer_op_candidate_char(ch)) {
+            destination[out++] = ch;
+        }
+    }
+    destination[out] = '\0';
+}
+
+static void keyer_op_reset_candidate(void)
+{
+    s_op_candidate[0] = '\0';
+    s_op_candidate_len = 0U;
+    s_op_candidate_has_digit = false;
+    s_op_candidate_overflow = false;
+}
+
+static void keyer_op_reset_stream(void)
+{
+    keyer_op_reset_candidate();
+    s_op_rolling[0] = '\0';
+}
+
+static bool keyer_op_build_base_call(const char *candidate, char *base, size_t base_size)
+{
+    size_t len;
+    size_t segment_start = 0U;
+
+    if (candidate == NULL || base == NULL || base_size == 0U) {
+        return false;
+    }
+
+    base[0] = '\0';
+    len = strlen(candidate);
+    if (len == 0U || !keyer_op_text_has_digit(candidate, len)) {
+        return false;
+    }
+
+    for (size_t i = 0U; i <= len; ++i) {
+        if (candidate[i] == '/' || candidate[i] == '\0') {
+            size_t segment_len = i - segment_start;
+            if (segment_len > 0U && segment_len <= KEYER_OP_CALL_MAX_LEN &&
+                keyer_op_text_has_digit(&candidate[segment_start], segment_len)) {
+                snprintf(base, base_size, "%.*s", (int)segment_len, &candidate[segment_start]);
+                return true;
+            }
+            segment_start = i + 1U;
+        }
+    }
+
+    return false;
+}
+
+static bool keyer_op_is_mycall(const char *candidate, const char *base_call)
+{
+    if (s_config.mycall[0] == '\0') {
+        return false;
+    }
+
+    return (candidate != NULL && strcmp(candidate, s_config.mycall) == 0) ||
+           (base_call != NULL && strcmp(base_call, s_config.mycall) == 0);
+}
+
+static bool keyer_op_lookup_name(const char *base_call, char *name, size_t name_size)
+{
+    if (base_call == NULL || name == NULL || name_size == 0U) {
+        return false;
+    }
+
+    name[0] = '\0';
+    for (size_t i = 0U; i < s_op_entry_count; ++i) {
+        if (strcmp(s_op_entries[i].call, base_call) == 0) {
+            snprintf(name, name_size, "%s", s_op_entries[i].name);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static void keyer_op_try_candidate(void)
+{
+    char base_call[KEYER_OP_CALL_MAX_LEN + 1U];
+    char name[KEYER_OP_NAME_MAX_LEN + 1U];
+
+    if (s_op_candidate_len == 0U || !s_op_candidate_has_digit || s_op_candidate_overflow ||
+        !keyer_op_build_base_call(s_op_candidate, base_call, sizeof(base_call)) ||
+        keyer_op_is_mycall(s_op_candidate, base_call)) {
+        return;
+    }
+
+    if (keyer_op_lookup_name(base_call, name, sizeof(name))) {
+        snprintf(s_op_name, sizeof(s_op_name), "%s", name);
+        ESP_LOGI(TAG, "OP match: %s -> %s", base_call, s_op_name);
+    }
+}
+
+static void keyer_op_feed_candidate_char(char ch)
+{
+    if (keyer_op_candidate_char(ch)) {
+        if (s_op_candidate_len >= KEYER_OP_CANDIDATE_MAX_LEN) {
+            s_op_candidate_overflow = true;
+            return;
+        }
+
+        s_op_candidate[s_op_candidate_len++] = ch;
+        s_op_candidate[s_op_candidate_len] = '\0';
+        if (ch >= '0' && ch <= '9') {
+            s_op_candidate_has_digit = true;
+        }
+        keyer_op_try_candidate();
+        return;
+    }
+
+    keyer_op_try_candidate();
+    keyer_op_reset_candidate();
+}
+
+static void keyer_op_clear_display(void)
+{
+    if (s_op_name[0] != '\0') {
+        ESP_LOGI(TAG, "OP display cleared");
+    }
+    s_op_name[0] = '\0';
+}
+
+static bool keyer_op_feed_rolling_char(char ch)
+{
+    char normalized = (char)toupper((unsigned char)ch);
+    size_t len = strlen(s_op_rolling);
+    char padded[KEYER_OP_ROLLING_LEN + 3U];
+
+    if (!isalnum((unsigned char)normalized)) {
+        normalized = ' ';
+    }
+
+    if (len >= KEYER_OP_ROLLING_LEN) {
+        memmove(s_op_rolling, s_op_rolling + 1U, KEYER_OP_ROLLING_LEN - 1U);
+        len = KEYER_OP_ROLLING_LEN - 1U;
+    }
+    s_op_rolling[len++] = normalized;
+    s_op_rolling[len] = '\0';
+
+    snprintf(padded, sizeof(padded), " %s ", s_op_rolling);
+    if (strstr(padded, " 73 ") != NULL || strstr(padded, " 7 3 ") != NULL ||
+        strstr(padded, " 72 ") != NULL || strstr(padded, " 7 2 ") != NULL) {
+        keyer_op_clear_display();
+        keyer_op_reset_stream();
+        return true;
+    }
+
+    return false;
 }
 
 static void keyer_set_gpio_level_if_ready(gpio_num_t gpio, bool active)
@@ -1337,6 +1536,17 @@ void keyer_service_set_message(uint8_t index, const char *message)
     ESP_LOGI(TAG, "message M%u: %s", (unsigned)(index + 1U), s_config.message[index]);
 }
 
+const char *keyer_service_get_mycall(void)
+{
+    return s_config.mycall;
+}
+
+void keyer_service_set_mycall(const char *mycall)
+{
+    keyer_copy_mycall(s_config.mycall, mycall);
+    ESP_LOGI(TAG, "mycall: %s", s_config.mycall);
+}
+
 const keyer_config_t *keyer_service_get_config(void)
 {
     return &s_config;
@@ -1368,6 +1578,8 @@ void keyer_service_set_config(const keyer_config_t *config)
                        KEYER_TUNE_TIMEOUT_MAX_S);
     s_config.repeat_interval_s =
         keyer_clamp_u8(s_config.repeat_interval_s, KEYER_REPEAT_MIN_S, KEYER_REPEAT_MAX_S);
+    s_config.mycall[KEYER_MYCALL_MAX_LEN] = '\0';
+    keyer_copy_mycall(s_config.mycall, s_config.mycall);
     for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
         s_config.message[i][KEYER_MESSAGE_MAX_LEN] = '\0';
     }
@@ -1593,6 +1805,50 @@ uint32_t keyer_service_tx_revision(void)
     return s_tx_revision;
 }
 
+void keyer_service_set_op_table(keyer_op_entry_t *entries, size_t count)
+{
+    if (entries == NULL) {
+        count = 0U;
+    }
+
+    free(s_op_entries);
+    s_op_entries = entries;
+    s_op_entry_count = count;
+    ESP_LOGI(TAG, "OP lookup table loaded: %u entries", (unsigned)s_op_entry_count);
+}
+
+void keyer_service_op_feed_char(char ch)
+{
+    char normalized = (char)toupper((unsigned char)ch);
+
+    if (keyer_op_feed_rolling_char(normalized)) {
+        return;
+    }
+    keyer_op_feed_candidate_char(normalized);
+}
+
+void keyer_service_op_feed_text(const char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+
+    while (*text != '\0') {
+        keyer_service_op_feed_char(*text++);
+    }
+}
+
+const char *keyer_service_get_op_name(void)
+{
+    return s_op_name;
+}
+
+void keyer_service_clear_op_name(void)
+{
+    keyer_op_clear_display();
+    keyer_op_reset_stream();
+}
+
 void keyer_service_play_text(const char *text)
 {
     if (text == NULL || text[0] == '\0') {
@@ -1625,6 +1881,7 @@ void keyer_service_set_tune_active(bool active)
     }
 
     keyer_service_tx_clear();
+    keyer_service_clear_op_name();
 
     keyer_reset_input_state();
     keyer_clear_tune_state();

@@ -37,8 +37,9 @@ Backspace edit typed copy
 Settings screens use numbered rows. Press the row number to edit a value, type
 digits or use `,` and `/` to decrease/increase, then press Enter to apply.
 Text fields store typed letters as uppercase; use Fn+`,` and Fn+`/` to move the
-text cursor left/right while editing. Fn+`;` and Fn+`.` remain available for
-up/down navigation behavior. Backtick cancels an edit.
+text cursor left/right while editing. The edit cursor is shown as `_`. Fn+`;`
+and Fn+`.` remain available for up/down navigation behavior. Backtick cancels an
+edit.
 
 ## Modes
 
@@ -66,6 +67,12 @@ The Keyer top row is a fixed 20-character white status line:
 Keyer [keyIn] [keyOut] [WPM]
 ```
 
+If Keyer OP lookup has a current match, the top row switches to:
+
+```text
+Keyer [name:11] [WPM]
+```
+
 Lines 1-5 show decoded key input history in green. Line 6 shows the remaining TX
 FIFO tail, selected status text such as `Mute:ON`, or Tune state. Sent
 characters are removed from the display after they complete.
@@ -89,6 +96,20 @@ Mute suppresses sidetone only; it does not disable keyOut. Message memories are
 plain text. There is no bracket macro expansion or `qsocalls.txt` lookup.
 Keyboard and message boundaries get one inserted space when needed, so a message,
 typed RST, and another message send in exact FIFO order without overlap.
+
+Keyer OP lookup reads `/fatfs/qsocalls.csv` when firmware owns FATFS at startup
+and after USB Drive is turned OFF. The CSV is `call,name`, with pre-normalized
+uppercase calls up to 6 characters and names up to 11 characters:
+
+```text
+KG6YJ,JUN
+N6HAN,HAN
+```
+
+Callsign-like decoded, typed, or message text can update the displayed OP name;
+unmatched calls leave the current name unchanged. `mycall` is ignored. `73`,
+`7 3`, `72`, or `7 2` clears the displayed OP name. `EE` and `E E` do not clear
+it. OP lookup does not expand messages.
 
 Tune is a Keyer-only sub-mode. Press Tab from the Keyer main page to enter or
 exit it. The top row changes to `Tune` and line 6 shows `Tune`, `Tune:T`, or
@@ -118,8 +139,9 @@ Page 2
 
 Page 3
 1 Paddle    IambicA, IambicB, Bug
-3 txDelay   0..99 seconds
-5 TuneTimeout 0..20 seconds, 0 means no timeout
+2 txDelay   0..99 seconds
+3 TuneTimeout 0..20 seconds, 0 means no timeout
+4 myCall    default AG6AQ
 ```
 
 M1 repeats at `RepeatInt` after the FIFO drains. Keyboard input or selecting
@@ -164,6 +186,8 @@ Settings:
 2 MinChar    5..40
 3 Lesson     9..40
 4 MaxLen     2..15
+5 MaxWPM     5..40
+6 Delay_s    0..5 seconds
 ```
 
 ### Calls
@@ -187,6 +211,7 @@ Settings:
 1 Speed      5..40
 2 MinChar    5..40
 3 MaxWPM     5..40
+4 Delay_s    0..5 seconds
 ```
 
 ### Plain
@@ -250,15 +275,17 @@ firmware-built-in practice data.
 
 Settings are saved in FATFS as `/fatfs/setting.txt`. Saved settings include
 system volume/tone/keyIn/WPM; Keyer keyOut, paddle, txDelay, TuneTimeout,
-RepeatInt, and M1-M5; and trainer mode configuration. Keyer Mute is
+RepeatInt, mycall, and M1-M5; and trainer mode configuration. Keyer Mute is
 intentionally not persisted.
+
+Keyer OP lookup data is read from `/fatfs/qsocalls.csv` and is not rewritten by
+firmware.
 
 ## Current Limitations
 
 ```text
 No file-backed word/callsign/plaintext lists yet
 Trainer result persistence is not enabled yet
-No CW decoder display yet
 No QSO/logging/statistics mode yet
 Callsign bank is prototype data and will be replaced or generated later
 ```

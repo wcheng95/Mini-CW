@@ -26,9 +26,11 @@ static const char *TAG = "storage_service";
 #define STORAGE_FATFS_BASE_PATH "/fatfs"
 #define STORAGE_SETTINGS_PATH STORAGE_FATFS_BASE_PATH "/setting.txt"
 #define STORAGE_SETTINGS_TMP_PATH STORAGE_FATFS_BASE_PATH "/setting.tmp"
+#define STORAGE_QSOCALLS_PATH STORAGE_FATFS_BASE_PATH "/qsocalls.csv"
 #define STORAGE_FATFS_MAX_FILES 4
 #define STORAGE_FATFS_ALLOC_UNIT 4096
 #define STORAGE_SETTINGS_LINE_MAX 128
+#define STORAGE_QSOCALLS_LINE_MAX 128
 #define STORAGE_VOLUME_MIN 0U
 #define STORAGE_VOLUME_MAX 99U
 #define STORAGE_TONE_HZ_MIN 300U
@@ -65,6 +67,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_OLD_DEFAULT_M5 "BK TU GM UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_DEFAULT_M2 "TU UR CA CA BK"
 #define STORAGE_KEYER_DEFAULT_M5 "BK TU GM UR 599 599 CA CA BK"
+#define STORAGE_KEYER_DEFAULT_MYCALL "AG6AQ"
 
 #define STORAGE_KEY_SYSTEM_VOLUME (1UL << 0)
 #define STORAGE_KEY_SYSTEM_KEY_IN (1UL << 1)
@@ -98,6 +101,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_M4 (1UL << 29)
 #define STORAGE_KEY_KEYER_M5 (1UL << 30)
 #define STORAGE_KEY_KEYER_TUNE_TIMEOUT (1UL << 31)
+#define STORAGE_KEY_KEYER_MYCALL (1ULL << 32)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -121,7 +125,7 @@ static const char *TAG = "storage_service";
       STORAGE_KEY_KEYER_KEY_OUT | STORAGE_KEY_KEYER_PADDLE |                         \
       STORAGE_KEY_KEYER_TX_DELAY | STORAGE_KEY_KEYER_REPEAT | STORAGE_KEY_KEYER_M1 |  \
       STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
-      STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT |                        \
+      STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT | STORAGE_KEY_KEYER_MYCALL | \
       STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
@@ -375,6 +379,28 @@ static void storage_copy_keyer_message(char *destination, const char *source)
              source ? source : "");
 }
 
+static void storage_copy_keyer_mycall(char *destination, const char *source)
+{
+    size_t out = 0U;
+
+    if (destination == NULL) {
+        return;
+    }
+
+    if (source == NULL) {
+        destination[0] = '\0';
+        return;
+    }
+
+    while (*source != '\0' && out < KEYER_MYCALL_MAX_LEN) {
+        char ch = (char)toupper((unsigned char)*source++);
+        if ((ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '/') {
+            destination[out++] = ch;
+        }
+    }
+    destination[out] = '\0';
+}
+
 static void storage_strip_inline_comment(char *line)
 {
     if (line == NULL) {
@@ -604,6 +630,7 @@ static void storage_settings_set_defaults(void)
         .tx_delay_s = 1,
         .tune_timeout_s = 10,
         .repeat_interval_s = 6,
+        .mycall = STORAGE_KEYER_DEFAULT_MYCALL,
         .message = {
             "CQ SOTA DE AG6AQ",
             STORAGE_KEYER_DEFAULT_M2,
@@ -707,6 +734,11 @@ static void storage_normalize_keyer_config(bool *changed)
 
     for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
         s_keyer_config.message[i][KEYER_MESSAGE_MAX_LEN] = '\0';
+    }
+    s_keyer_config.mycall[KEYER_MYCALL_MAX_LEN] = '\0';
+    storage_copy_keyer_mycall(s_keyer_config.mycall, s_keyer_config.mycall);
+    if (s_keyer_config.mycall[0] == '\0') {
+        storage_copy_keyer_mycall(s_keyer_config.mycall, STORAGE_KEYER_DEFAULT_MYCALL);
     }
 
     if (strcmp(s_keyer_config.message[1], STORAGE_KEYER_OLD_DEFAULT_M2) == 0) {
@@ -956,7 +988,7 @@ static bool storage_apply_lesson_group_len(const char *value, bool *changed)
 static void storage_apply_setting(storage_setting_section_t section,
                                   const char *key,
                                   const char *value,
-                                  uint32_t *seen_keys,
+                                  uint64_t *seen_keys,
                                   bool *changed)
 {
     bool usb_drive_requested = false;
@@ -1040,6 +1072,9 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_KEYER_TUNE_TIMEOUT_MAX,
                                            &s_keyer_config.tune_timeout_s,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "mycall")) {
+            *seen_keys |= STORAGE_KEY_KEYER_MYCALL;
+            storage_copy_keyer_mycall(s_keyer_config.mycall, value);
         } else if (storage_str_equal_ignore_case(key, "m1")) {
             *seen_keys |= STORAGE_KEY_KEYER_M1;
             storage_copy_keyer_message(s_keyer_config.message[0], value);
@@ -1255,9 +1290,10 @@ static bool storage_write_settings_file(void)
                             "tx_delay_s=%u\n"
                             "tune_timeout_s=%u\n"
                             "repeat_interval_s=%u\n"
-                           "m1=%s\n"
-                           "m2=%s\n"
-                           "m3=%s\n"
+                            "mycall=%s\n"
+                            "m1=%s\n"
+                            "m2=%s\n"
+                            "m3=%s\n"
                            "m4=%s\n"
                            "m5=%s\n"
                            "\n"
@@ -1294,9 +1330,10 @@ static bool storage_write_settings_file(void)
                             (unsigned)s_keyer_config.tx_delay_s,
                             (unsigned)s_keyer_config.tune_timeout_s,
                             (unsigned)s_keyer_config.repeat_interval_s,
-                           s_keyer_config.message[0],
-                           s_keyer_config.message[1],
-                           s_keyer_config.message[2],
+                            s_keyer_config.mycall,
+                            s_keyer_config.message[0],
+                            s_keyer_config.message[1],
+                            s_keyer_config.message[2],
                            s_keyer_config.message[3],
                            s_keyer_config.message[4],
                            (unsigned)s_lesson_config.lesson,
@@ -1410,7 +1447,7 @@ bool storage_profile_load(void)
     FILE *file;
     char line[STORAGE_SETTINGS_LINE_MAX];
     storage_setting_section_t current_section = STORAGE_SETTING_SECTION_NONE;
-    uint32_t seen_keys = 0;
+    uint64_t seen_keys = 0;
     uint32_t seen_sections = 0;
     bool needs_rewrite = false;
 
@@ -1512,6 +1549,99 @@ bool storage_session_log_append(const char *line)
 
     ESP_LOGI(TAG, "session log skipped: %s", line ? line : "");
     return false;
+}
+
+bool storage_qsocalls_load(keyer_op_entry_t **entries, size_t *count)
+{
+    FILE *file;
+    char line[STORAGE_QSOCALLS_LINE_MAX];
+    keyer_op_entry_t *loaded = NULL;
+    size_t loaded_count = 0U;
+    size_t capacity = 0U;
+    bool read_error = false;
+
+    if (entries == NULL || count == NULL) {
+        return false;
+    }
+
+    *entries = NULL;
+    *count = 0U;
+
+    if (!storage_firmware_can_access_fatfs("qsocalls.csv load")) {
+        return false;
+    }
+
+    file = fopen(STORAGE_QSOCALLS_PATH, "r");
+    if (file == NULL) {
+        ESP_LOGI(TAG, "%s missing; OP lookup disabled", STORAGE_QSOCALLS_PATH);
+        return true;
+    }
+
+    while (fgets(line, sizeof(line), file) != NULL) {
+        char *trimmed = storage_trim(line);
+        char *comma;
+        char *call;
+        char *name;
+        size_t call_len;
+        size_t name_len;
+
+        if (trimmed == NULL || *trimmed == '\0' || *trimmed == '#' || *trimmed == ';') {
+            continue;
+        }
+
+        comma = strchr(trimmed, ',');
+        if (comma == NULL) {
+            continue;
+        }
+        *comma = '\0';
+        call = storage_trim(trimmed);
+        name = storage_trim(comma + 1);
+        if (call == NULL || name == NULL || strchr(name, ',') != NULL) {
+            continue;
+        }
+
+        if (storage_str_equal_ignore_case(call, "call") &&
+            storage_str_equal_ignore_case(name, "name")) {
+            continue;
+        }
+
+        call_len = strlen(call);
+        name_len = strlen(name);
+        if (call_len == 0U || call_len > KEYER_OP_CALL_MAX_LEN ||
+            name_len == 0U || name_len > KEYER_OP_NAME_MAX_LEN) {
+            continue;
+        }
+
+        if (loaded_count >= capacity) {
+            size_t next_capacity = capacity == 0U ? 64U : capacity * 2U;
+            keyer_op_entry_t *next =
+                (keyer_op_entry_t *)realloc(loaded, next_capacity * sizeof(*loaded));
+            if (next == NULL) {
+                ESP_LOGW(TAG,
+                         "OP lookup allocation failed after %u rows; using partial table",
+                         (unsigned)loaded_count);
+                break;
+            }
+            loaded = next;
+            capacity = next_capacity;
+        }
+
+        snprintf(loaded[loaded_count].call, sizeof(loaded[loaded_count].call), "%s", call);
+        snprintf(loaded[loaded_count].name, sizeof(loaded[loaded_count].name), "%s", name);
+        ++loaded_count;
+    }
+
+    if (ferror(file) != 0) {
+        ESP_LOGW(TAG, "read %s failed; using %u rows", STORAGE_QSOCALLS_PATH, (unsigned)loaded_count);
+        read_error = true;
+    }
+
+    (void)fclose(file);
+
+    *entries = loaded;
+    *count = loaded_count;
+    ESP_LOGI(TAG, "loaded %u OP lookup rows from %s", (unsigned)loaded_count, STORAGE_QSOCALLS_PATH);
+    return !read_error || loaded_count > 0U;
 }
 
 bool storage_system_load_config(storage_system_config_t *config)

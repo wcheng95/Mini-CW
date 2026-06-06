@@ -25,6 +25,14 @@ typedef enum {
 
 #define KEYER_MESSAGE_COUNT 5U
 #define KEYER_MESSAGE_MAX_LEN 95U
+#define KEYER_MYCALL_MAX_LEN 12U
+#define KEYER_OP_CALL_MAX_LEN 6U
+#define KEYER_OP_NAME_MAX_LEN 11U
+
+typedef struct {
+    char call[KEYER_OP_CALL_MAX_LEN + 1U];
+    char name[KEYER_OP_NAME_MAX_LEN + 1U];
+} keyer_op_entry_t;
 
 typedef enum {
     KEYER_KEY_IN_PADDLE = 0,
@@ -53,6 +61,7 @@ typedef struct {
     uint8_t tx_delay_s;
     uint8_t tune_timeout_s;
     uint8_t repeat_interval_s;
+    char mycall[KEYER_MYCALL_MAX_LEN + 1U];
     char message[KEYER_MESSAGE_COUNT][KEYER_MESSAGE_MAX_LEN + 1U];
 } keyer_config_t;
 
@@ -95,6 +104,8 @@ uint8_t keyer_service_get_repeat_interval_s(void);
 void keyer_service_set_repeat_interval_s(uint8_t interval_s);
 const char *keyer_service_get_message(uint8_t index);
 void keyer_service_set_message(uint8_t index, const char *message);
+const char *keyer_service_get_mycall(void);
+void keyer_service_set_mycall(const char *mycall);
 const keyer_config_t *keyer_service_get_config(void);
 void keyer_service_set_config(const keyer_config_t *config);
 void keyer_service_get_config_copy(keyer_config_t *config);
@@ -120,6 +131,11 @@ void keyer_service_tx_start(void);
 bool keyer_service_tx_has_text(void);
 void keyer_service_tx_copy_text(char *destination, size_t destination_size);
 uint32_t keyer_service_tx_revision(void);
+void keyer_service_set_op_table(keyer_op_entry_t *entries, size_t count);
+void keyer_service_op_feed_char(char ch);
+void keyer_service_op_feed_text(const char *text);
+const char *keyer_service_get_op_name(void);
+void keyer_service_clear_op_name(void);
 void keyer_service_set_tune_active(bool active);
 bool keyer_service_get_tune_active(void);
 void keyer_service_set_tune_latched(bool latched);

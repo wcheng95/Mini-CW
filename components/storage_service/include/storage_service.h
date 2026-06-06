@@ -13,6 +13,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -34,6 +35,7 @@ bool storage_system_load_config(storage_system_config_t *config);
 bool storage_system_save_config(const storage_system_config_t *config);
 bool storage_keyer_load_config(keyer_config_t *config);
 bool storage_keyer_save_config(const keyer_config_t *config);
+bool storage_qsocalls_load(keyer_op_entry_t **entries, size_t *count);
 bool storage_lesson_load(cw_lesson_config_t *config, cw_lesson_result_t *result);
 bool storage_lesson_save_config(const cw_lesson_config_t *config);
 bool storage_lesson_save_result(const cw_lesson_result_t *result);
