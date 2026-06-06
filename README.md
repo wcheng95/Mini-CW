@@ -12,7 +12,7 @@ Mini-CW is a portable CW/Morse keyer and trainer for the M5 Cardputer ADV. The
 current firmware has a working keyer plus LCWO-inspired trainer modes for
 Lessons, Words, Callsigns, and Plain Text.
 
-## Screen Layout
+# Screen Layout
 
 The display is a fixed 240 x 135 text UI:
 
@@ -24,7 +24,7 @@ Green separator
 
 The last content row is often used as a compact status or command hint.
 
-## Main Controls
+# Main Controls
 
 ```text
 Opt       open/close mode select
@@ -41,7 +41,7 @@ text cursor left/right while editing. The edit cursor is shown as `_`. Fn+`;`
 and Fn+`.` remain available for up/down navigation behavior. Backtick cancels an
 edit.
 
-## Modes
+# Modes
 
 Mode select currently shows:
 
@@ -54,12 +54,10 @@ Mode select currently shows:
 6 System
 ```
 
-### Keyer
+## Keyer
 
-Keyer mode starts on boot. Paddle and straight-key input are handled by
-`keyer_service`. Keyboard CW characters typed on the Cardputer and M1-M5 message
-memories append into one TX FIFO on line 6. TX starts after `txDelay`, or
-immediately with Enter.
+Keyer mode starts on boot. Keyboard CW characters typed on the Cardputer and M1-M5 message
+memories append into one TX FIFO on line 6. TX starts after `txDelay`, or immediately with Enter.
 
 The Keyer top row is a fixed 20-character white status line:
 
@@ -77,7 +75,7 @@ Lines 1-5 show decoded key input history in green. Line 6 shows the remaining TX
 FIFO tail, selected status text such as `Mute:ON`, or Tune state. Sent
 characters are removed from the display after they complete.
 
-Keyer shortcuts:
+### Keyer shortcuts:
 
 ```text
 Tab       enter/exit Tune mode
@@ -92,13 +90,10 @@ Hold Backspace clear decoded history and TX FIFO
 `         cancel current TX/playback
 ```
 
-Mute suppresses sidetone only; it does not disable keyOut. Message memories are
-plain text. There is no bracket macro expansion or `qsocalls.txt` lookup.
-Keyboard and message boundaries get one inserted space when needed, so a message,
-typed RST, and another message send in exact FIFO order without overlap.
+Mute suppresses sidetone only; it does not disable keyOut. 
 
-Keyer OP lookup reads `/fatfs/qsocalls.csv` when firmware owns FATFS at startup
-and after USB Drive is turned OFF. The CSV is `call,name`, with pre-normalized
+### Keyer OP lookup
+Keyer OP lookup reads `/fatfs/qsocalls.csv` The CSV is `call,name`, with pre-normalized
 uppercase calls up to 6 characters and names up to 11 characters:
 
 ```text
@@ -108,17 +103,15 @@ N6HAN,HAN
 
 Callsign-like decoded, typed, or message text can update the displayed OP name;
 unmatched calls leave the current name unchanged. `mycall` is ignored. `73`,
-`7 3`, `72`, or `7 2` clears the displayed OP name. `EE` and `E E` do not clear
-it. OP lookup does not expand messages.
+`7 3`, `72`, or `7 2` clears the displayed OP name.
 
-Tune is a Keyer-only sub-mode. Press Tab from the Keyer main page to enter or
-exit it. The top row changes to `Tune` and line 6 shows `Tune`, `Tune:T`, or
-`Tune:Hold`. In Tune mode, paddle tip or ring true-holds tune output through the
+### Tune
+Press Tab from the Keyer main page to enter or exit it. In Tune mode, paddle tip or ring true-holds tune output through the
 current keyOut mode. Press `T` to start latched tune; press `T` again, press Tab,
 press the paddle, or wait for `TuneTimeout` to stop it. `TuneTimeout:0` disables
 the automatic timeout. Other keyboard keys are ignored while Tune is active.
 
-Keyer settings:
+### Keyer settings:
 
 ```text
 Page 1
@@ -131,24 +124,24 @@ Page 1
 
 Page 2
 1 M1        CQ SOTA DE AG6AQ
-2 M2        TU UR CA CA BK
-3 M3        BK TU 72 DE AG6AQ E E
+2 M2        CQ POTA DE AG6AQ
+3 M3        
 4 M4        AG6AQ
-5 M5        BK TU GM UR 599 599 CA CA BK
+5 M5        BK TU UR 5NN 5NN CA CA BK
 6 RepeatInt 1..99 seconds, used by repeating M1
 
 Page 3
 1 Paddle    IambicA, IambicB, Bug
 2 txDelay   0..99 seconds
 3 TuneTimeout 0..20 seconds, 0 means no timeout
-4 myCall    default AG6AQ
+4 myCall    AG6AQ (optional, exclude myCall from OP lookup)
 ```
 
 M1 repeats at `RepeatInt` after the FIFO drains. Keyboard input or selecting
 M2-M5 cancels M1 repeat. M2-M5 are one-shot. A paddle or straight-key press
-cancels active or queued message/TX FIFO content; the cancel element is consumed.
+cancels active or queued message/TX FIFO content.
 
-### Lessons
+## Lessons
 
 Lessons mode is Koch-style receive practice. It generates random copy from the
 active lesson character set, sends it at the configured code/effective speed,
@@ -164,7 +157,7 @@ Settings:
 5 Group       Rand, or 2..7 characters
 ```
 
-### Words
+## Words
 
 Words mode runs 25-word adaptive attempts from a built-in English word bank.
 Correct answers raise WPM, wrong answers lower WPM, and the result tracks score,
@@ -190,7 +183,7 @@ Settings:
 6 Delay_s    0..5 seconds
 ```
 
-### Calls
+## Calls
 
 Calls mode runs 25-callsign adaptive attempts from a prototype built-in bank.
 It accepts letters, digits, and `/`. Correct answers raise WPM up to MaxWPM;
@@ -214,7 +207,7 @@ Settings:
 4 Delay_s    0..5 seconds
 ```
 
-### Plain
+## Plain
 
 Plain mode sends one randomly selected built-in plain-text message, accepts
 typed copy, and scores the result with Levenshtein accuracy after whitespace
@@ -229,7 +222,7 @@ Settings:
 2 Eff WPM    5..40, clamped to Code WPM
 ```
 
-### System
+## System
 
 System mode contains device-wide settings and actions.
 
