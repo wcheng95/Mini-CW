@@ -96,7 +96,7 @@ Hold Backspace clear decoded history and TX FIFO
 Mute suppresses sidetone only; it does not disable keyOut. 
 
 ### Keyer OP lookup
-Keyer OP lookup reads `/fatfs/qsocalls.csv` The CSV is `call,name`, with pre-normalized
+Keyer OP lookup reads `/fatfs/qsocalls.csv`. The CSV is `call,name`, with pre-normalized
 uppercase calls up to 6 characters and names up to 11 characters:
 
 ```text
@@ -279,15 +279,27 @@ system volume/tone/keyIn/WPM; Keyer keyOut, paddle, SK Wpm, txDelay,
 TuneTimeout, RepeatInt, mycall, and M1-M5; and trainer mode configuration. Keyer Mute is
 intentionally not persisted.
 
-Keyer OP lookup data is read from `/fatfs/qsocalls.csv` and is not rewritten by
-firmware.
+Keyer OP lookup data is read from `/fatfs/qsocalls.csv`. If the file is missing,
+firmware creates a header-only `call,name` file; existing user-managed lookup
+files are not overwritten.
 
 Mini-CW uses the shared Mini 8 MB partition layout: one factory app partition
 from `0x10000` to `0x500000`, and a 3 MB FATFS partition from `0x500000` to
-`0x800000`. FATFS survives normal app reflashes that use this same table, but
-not `erase_flash`, full-chip erase, or another partition layout change. Moving
-from the older `0x400000` FATFS layout may cause a one-time FATFS reformat on
-first boot.
+`0x800000`. FATFS uses 512-byte FATFS/WL sectors for USB MSC compatibility.
+FATFS survives normal app reflashes that use this same table, but not
+`erase_flash`, full-chip erase, or another partition layout change. Moving from
+the older `0x400000` FATFS layout may cause a one-time FATFS reformat on first
+boot.
+
+The build generates `build/fatfs.bin` from `fatfs_image/` and
+`build/MiniCW_V1_1_Merged_Auto.bin` for factory/release flashing. Normal
+`idf.py flash` does not write `fatfs.bin`, so existing FATFS files survive. The
+merged release binary includes the seed FATFS image and overwrites
+`setting.txt` and `qsocalls.csv`.
+
+The release package can contain `MiniCW_V1_1.bin` and `flash_mini_cw.ps1` in the
+same directory. The flash script defaults to COM11 and loads `MiniCW_V1_1.bin`
+from its own directory.
 
 ## Current Limitations
 

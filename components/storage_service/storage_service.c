@@ -27,8 +27,9 @@ static const char *TAG = "storage_service";
 #define STORAGE_SETTINGS_PATH STORAGE_FATFS_BASE_PATH "/setting.txt"
 #define STORAGE_SETTINGS_TMP_PATH STORAGE_FATFS_BASE_PATH "/setting.tmp"
 #define STORAGE_QSOCALLS_PATH STORAGE_FATFS_BASE_PATH "/qsocalls.csv"
+#define STORAGE_QSOCALLS_HEADER "call,name\n"
 #define STORAGE_FATFS_MAX_FILES 4
-#define STORAGE_FATFS_ALLOC_UNIT 4096
+#define STORAGE_FATFS_ALLOC_UNIT 512
 #define STORAGE_SETTINGS_LINE_MAX 128
 #define STORAGE_QSOCALLS_LINE_MAX 128
 #define STORAGE_VOLUME_MIN 0U
@@ -1430,6 +1431,39 @@ static bool storage_write_settings_file(void)
     return true;
 }
 
+static bool storage_write_default_qsocalls_file(void)
+{
+    FILE *file;
+    int close_result;
+
+    file = fopen(STORAGE_QSOCALLS_PATH, "w");
+    if (file == NULL) {
+        ESP_LOGW(TAG, "open %s for default write failed: errno=%d", STORAGE_QSOCALLS_PATH, errno);
+        return false;
+    }
+
+    if (fputs(STORAGE_QSOCALLS_HEADER, file) == EOF || ferror(file) != 0) {
+        ESP_LOGW(TAG, "write %s defaults failed", STORAGE_QSOCALLS_PATH);
+        (void)fclose(file);
+        return false;
+    }
+
+    if (fflush(file) != 0) {
+        ESP_LOGW(TAG, "flush %s defaults failed: errno=%d", STORAGE_QSOCALLS_PATH, errno);
+        (void)fclose(file);
+        return false;
+    }
+
+    close_result = fclose(file);
+    if (close_result != 0) {
+        ESP_LOGW(TAG, "close %s defaults failed: errno=%d", STORAGE_QSOCALLS_PATH, errno);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "%s missing; created default header", STORAGE_QSOCALLS_PATH);
+    return true;
+}
+
 void storage_service_init(void)
 {
     const esp_partition_t *partition;
@@ -1613,9 +1647,14 @@ bool storage_qsocalls_load(keyer_op_entry_t **entries, size_t *count)
         return false;
     }
 
+    errno = 0;
     file = fopen(STORAGE_QSOCALLS_PATH, "r");
     if (file == NULL) {
-        ESP_LOGI(TAG, "%s missing; OP lookup disabled", STORAGE_QSOCALLS_PATH);
+        if (errno == ENOENT) {
+            (void)storage_write_default_qsocalls_file();
+        } else {
+            ESP_LOGW(TAG, "open %s failed: errno=%d", STORAGE_QSOCALLS_PATH, errno);
+        }
         return true;
     }
 
