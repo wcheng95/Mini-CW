@@ -46,6 +46,11 @@ static const char *TAG = "keyer_service";
 #define KEYER_TUNE_TIMEOUT_MAX_S 20U
 #define KEYER_REPEAT_MIN_S 1U
 #define KEYER_REPEAT_MAX_S 99U
+#define KEYER_SK_WPM_SAVE_STABLE_MS 120000U
+#define KEYER_SK_ACTIVE_GAP_MAX_MS 3000U
+#define KEYER_SK_STABLE_BAND_WPM 1U
+#define KEYER_SK_ADAPT_OLD_WEIGHT 3U
+#define KEYER_SK_ADAPT_DENOMINATOR 4U
 #define KEYER_OP_CANDIDATE_MAX_LEN 12U
 #define KEYER_OP_ROLLING_LEN 16U
 
@@ -74,10 +79,18 @@ static keyer_key_in_mode_t s_key_in_mode = KEYER_KEY_IN_PADDLE;
 static keyer_key_out_mode_t s_key_out_mode = KEYER_KEY_OUT_PADDLE;
 static keyer_paddle_mode_t s_paddle_mode = KEYER_PADDLE_IAMBIC_B;
 static uint8_t s_key_in_wpm = KEYER_DEFAULT_TX_WPM;
+static uint8_t s_sk_wpm_current = KEYER_DEFAULT_TX_WPM;
+static uint16_t s_sk_unit_ms;
+static bool s_sk_save_candidate_active;
+static uint8_t s_sk_save_candidate_wpm;
+static uint32_t s_sk_save_candidate_active_ms;
+static TickType_t s_sk_save_candidate_last_tick;
+static bool s_sk_wpm_save_requested;
 static bool s_gpio_ready;
 static bool s_key_out_gpio_ready;
 static bool s_straight_tone_on;
 static bool s_straight_key_down;
+static TickType_t s_straight_key_down_tick;
 static bool s_mute;
 static bool s_tune_active;
 static bool s_tune_latched;
@@ -127,6 +140,7 @@ static char s_op_rolling[KEYER_OP_ROLLING_LEN + 1U];
 static keyer_config_t s_config = {
     .key_out_mode = KEYER_KEY_OUT_PADDLE,
     .paddle_mode = KEYER_PADDLE_IAMBIC_B,
+    .sk_wpm = KEYER_DEFAULT_TX_WPM,
     .tx_delay_s = 1U,
     .tune_timeout_s = 10U,
     .repeat_interval_s = 6U,
@@ -215,9 +229,70 @@ static int keyer_cycle_int(int value, int count, int direction)
     return next;
 }
 
+static uint16_t keyer_wpm_to_dit_ms(uint16_t wpm)
+{
+    uint16_t clamped = keyer_clamp_tx_wpm(wpm);
+    uint16_t dit_ms = (uint16_t)(1200U / clamped);
+    return dit_ms > 0U ? dit_ms : 1U;
+}
+
 static uint16_t keyer_dit_ms(void)
 {
-    return (uint16_t)(1200U / keyer_clamp_tx_wpm(s_key_in_wpm));
+    return keyer_wpm_to_dit_ms(s_key_in_wpm);
+}
+
+static uint8_t keyer_unit_ms_to_wpm(uint32_t unit_ms)
+{
+    uint32_t wpm;
+
+    if (unit_ms == 0U) {
+        unit_ms = 1U;
+    }
+
+    wpm = (1200U + (unit_ms / 2U)) / unit_ms;
+    return (uint8_t)keyer_clamp_tx_wpm((uint16_t)wpm);
+}
+
+static uint16_t keyer_sk_dit_ms(void)
+{
+    if (s_sk_unit_ms == 0U) {
+        s_sk_unit_ms = keyer_wpm_to_dit_ms(s_config.sk_wpm);
+    }
+
+    return s_sk_unit_ms;
+}
+
+static void keyer_reset_sk_adaptive_state(void)
+{
+    s_config.sk_wpm = (uint8_t)keyer_clamp_tx_wpm(s_config.sk_wpm);
+    s_sk_wpm_current = s_config.sk_wpm;
+    s_sk_unit_ms = keyer_wpm_to_dit_ms(s_config.sk_wpm);
+    s_sk_save_candidate_active = false;
+    s_sk_save_candidate_wpm = 0U;
+    s_sk_save_candidate_active_ms = 0U;
+    s_sk_save_candidate_last_tick = 0;
+    s_sk_wpm_save_requested = false;
+}
+
+static uint16_t keyer_duration_ms_from_ticks(TickType_t start, TickType_t end)
+{
+    uint32_t elapsed_ticks = (uint32_t)(end - start);
+    uint32_t elapsed_ms = elapsed_ticks * (uint32_t)portTICK_PERIOD_MS;
+
+    if (elapsed_ms == 0U) {
+        elapsed_ms = 1U;
+    }
+
+    if (elapsed_ms > UINT16_MAX) {
+        return UINT16_MAX;
+    }
+
+    return (uint16_t)elapsed_ms;
+}
+
+static uint8_t keyer_u8_delta(uint8_t a, uint8_t b)
+{
+    return a > b ? (uint8_t)(a - b) : (uint8_t)(b - a);
 }
 
 static TickType_t keyer_ms_to_delay_ticks(uint32_t ms)
@@ -679,11 +754,6 @@ static bool keyer_cancel_tx_with_paddle_element(keyer_element_t element,
                                                 bool tip_pressed,
                                                 bool ring_pressed)
 {
-    uint16_t unit_ms = keyer_dit_ms();
-    keyer_event_type_t event_type;
-    char event_char;
-    uint16_t duration_ms;
-
     if ((!keyer_tx_playback_active() && !keyer_tx_has_remaining_text()) ||
         element == KEYER_ELEMENT_NONE) {
         return false;
@@ -694,10 +764,7 @@ static bool keyer_cancel_tx_with_paddle_element(keyer_element_t element,
     keyer_stop_tx_playback(keyer_tx_playback_active());
     keyer_ignore_physical_paddle_until_release(element, mode, tip_pressed, ring_pressed);
 
-    event_type = element == KEYER_ELEMENT_DIT ? KEYER_EVENT_DIT : KEYER_EVENT_DAH;
-    event_char = element == KEYER_ELEMENT_DIT ? '.' : '-';
-    duration_ms = element == KEYER_ELEMENT_DIT ? unit_ms : (uint16_t)(3U * unit_ms);
-    keyer_push_event(event_type, event_char, duration_ms);
+    keyer_push_event(KEYER_EVENT_TX_CANCELLED, '\0', 0U);
     return true;
 }
 
@@ -714,7 +781,7 @@ static bool keyer_cancel_tx_with_straight_key(bool tip_source)
     } else {
         s_cancel_ignore_ring = true;
     }
-    keyer_push_event(KEYER_EVENT_DIT, '.', 0U);
+    keyer_push_event(KEYER_EVENT_TX_CANCELLED, '\0', 0U);
     return true;
 }
 
@@ -812,6 +879,8 @@ static void keyer_reset_straight_state(void)
     keyer_stop_straight_tone();
     keyer_set_key_out_straight(false);
     s_straight_key_down = false;
+    s_straight_key_down_tick = 0;
+    keyer_reset_sk_adaptive_state();
 }
 
 static void keyer_clear_iambic_state(void)
@@ -943,7 +1012,7 @@ static void keyer_emit_decoder_result(keyer_decoder_result_t result)
         s_decoder_space_emitted = true;
         break;
     case KEYER_DECODER_RESULT_INVALID:
-        ESP_LOGW(TAG, "invalid paddle Morse pattern ignored");
+        ESP_LOGW(TAG, "invalid Morse pattern ignored");
         s_decoder_char_finalized = false;
         s_decoder_space_emitted = true;
         break;
@@ -953,9 +1022,8 @@ static void keyer_emit_decoder_result(keyer_decoder_result_t result)
     }
 }
 
-static void keyer_update_paddle_decode_gaps(TickType_t now)
+static void keyer_update_decode_gaps(TickType_t now, uint16_t unit_ms)
 {
-    uint16_t unit_ms = keyer_dit_ms();
     TickType_t char_due;
     TickType_t word_due;
 
@@ -1094,7 +1162,7 @@ static void keyer_update_bug_mode(bool dit_pressed,
         s_paddle_state = KEYER_PADDLE_IDLE;
     }
 
-    keyer_update_paddle_decode_gaps(now);
+    keyer_update_decode_gaps(now, keyer_dit_ms());
 
     if (dit_pressed) {
         if (keyer_cancel_tx_with_paddle_element(KEYER_ELEMENT_DIT,
@@ -1177,7 +1245,7 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
         s_paddle_state = KEYER_PADDLE_IDLE;
     }
 
-    keyer_update_paddle_decode_gaps(now);
+    keyer_update_decode_gaps(now, keyer_dit_ms());
 
     next = keyer_choose_next_iambic_element(dit_pressed, dah_pressed);
     if (next != KEYER_ELEMENT_NONE) {
@@ -1191,8 +1259,104 @@ static void keyer_update_paddle_mode(keyer_key_in_mode_t mode, bool tip_pressed,
     keyer_clear_iambic_state();
 }
 
+static void keyer_track_sk_wpm_stability(uint8_t observed_wpm,
+                                         uint16_t duration_ms,
+                                         TickType_t now)
+{
+    uint32_t active_ms = duration_ms;
+
+    if (observed_wpm == s_config.sk_wpm) {
+        s_sk_save_candidate_active = false;
+        s_sk_save_candidate_active_ms = 0U;
+        s_sk_save_candidate_last_tick = 0;
+        return;
+    }
+
+    if (!s_sk_save_candidate_active ||
+        keyer_u8_delta(observed_wpm, s_sk_save_candidate_wpm) > KEYER_SK_STABLE_BAND_WPM) {
+        s_sk_save_candidate_active = true;
+        s_sk_save_candidate_wpm = observed_wpm;
+        s_sk_save_candidate_active_ms = duration_ms;
+        s_sk_save_candidate_last_tick = now;
+        return;
+    }
+
+    if (s_sk_save_candidate_last_tick != 0) {
+        uint32_t elapsed_ms = keyer_duration_ms_from_ticks(s_sk_save_candidate_last_tick, now);
+        uint32_t gap_ms = elapsed_ms > duration_ms ? elapsed_ms - duration_ms : 0U;
+
+        if (gap_ms <= KEYER_SK_ACTIVE_GAP_MAX_MS) {
+            active_ms += gap_ms;
+        }
+    }
+
+    if (KEYER_SK_WPM_SAVE_STABLE_MS - s_sk_save_candidate_active_ms <= active_ms) {
+        s_config.sk_wpm = s_sk_save_candidate_wpm;
+        s_sk_wpm_save_requested = true;
+        s_sk_save_candidate_active = false;
+        s_sk_save_candidate_active_ms = 0U;
+        s_sk_save_candidate_last_tick = 0;
+        ESP_LOGI(TAG, "straight key wpm save requested: %u", (unsigned)s_config.sk_wpm);
+        return;
+    }
+
+    s_sk_save_candidate_active_ms += active_ms;
+    s_sk_save_candidate_last_tick = now;
+}
+
+static void keyer_adapt_sk_timing(keyer_element_t element, uint16_t duration_ms, TickType_t now)
+{
+    uint32_t sample_unit_ms;
+    uint32_t adapted_unit_ms;
+    uint16_t min_unit_ms = keyer_wpm_to_dit_ms(KEYER_MAX_TX_WPM);
+    uint16_t max_unit_ms = keyer_wpm_to_dit_ms(KEYER_MIN_TX_WPM);
+
+    if (element == KEYER_ELEMENT_DAH) {
+        sample_unit_ms = ((uint32_t)duration_ms + 1U) / 3U;
+    } else {
+        sample_unit_ms = duration_ms;
+    }
+
+    if (sample_unit_ms < min_unit_ms) {
+        sample_unit_ms = min_unit_ms;
+    } else if (sample_unit_ms > max_unit_ms) {
+        sample_unit_ms = max_unit_ms;
+    }
+
+    if (s_sk_unit_ms == 0U) {
+        s_sk_unit_ms = (uint16_t)sample_unit_ms;
+    } else {
+        adapted_unit_ms =
+            ((uint32_t)s_sk_unit_ms * KEYER_SK_ADAPT_OLD_WEIGHT + sample_unit_ms +
+             (KEYER_SK_ADAPT_DENOMINATOR / 2U)) /
+            KEYER_SK_ADAPT_DENOMINATOR;
+        s_sk_unit_ms = (uint16_t)adapted_unit_ms;
+    }
+
+    s_sk_wpm_current = keyer_unit_ms_to_wpm(s_sk_unit_ms);
+    keyer_track_sk_wpm_stability(s_sk_wpm_current, duration_ms, now);
+}
+
+static void keyer_finish_straight_element(TickType_t now)
+{
+    uint16_t duration_ms = keyer_duration_ms_from_ticks(s_straight_key_down_tick, now);
+    uint16_t unit_ms = keyer_sk_dit_ms();
+    keyer_element_t element =
+        (uint32_t)duration_ms <= (uint32_t)unit_ms * 2U ? KEYER_ELEMENT_DIT : KEYER_ELEMENT_DAH;
+    bool dah = element == KEYER_ELEMENT_DAH;
+
+    keyer_push_event(dah ? KEYER_EVENT_DAH : KEYER_EVENT_DIT, dah ? '-' : '.', duration_ms);
+    keyer_decoder_append(&s_paddle_decoder, dah);
+    s_decoder_last_element_end_tick = now;
+    s_decoder_char_finalized = false;
+    s_decoder_space_emitted = false;
+    keyer_adapt_sk_timing(element, duration_ms, now);
+}
+
 static void keyer_update_straight_key_mode(bool key_down, bool tip_source)
 {
+    TickType_t now = xTaskGetTickCount();
+
     keyer_clear_iambic_state();
 
     if (key_down && !s_straight_key_down) {
@@ -1200,16 +1364,21 @@ static void keyer_update_straight_key_mode(bool key_down, bool tip_source)
             return;
         }
         keyer_set_key_out_straight(true);
-        keyer_push_event(KEYER_EVENT_DIT, '.', 0U);
         if (!s_mute) {
             audio_service_tone_on();
             s_straight_tone_on = true;
         }
         s_straight_key_down = true;
+        s_straight_key_down_tick = now;
     } else if (!key_down && s_straight_key_down) {
         keyer_stop_straight_tone();
         keyer_set_key_out_straight(false);
         s_straight_key_down = false;
+        keyer_finish_straight_element(now);
+    }
+
+    if (!key_down) {
+        keyer_update_decode_gaps(now, keyer_sk_dit_ms());
     }
 }
 
@@ -1463,6 +1632,35 @@ void keyer_service_adjust_key_in_wpm(int delta)
     keyer_service_set_key_in_wpm((uint8_t)next);
 }
 
+uint8_t keyer_service_get_sk_wpm(void)
+{
+    if (s_sk_wpm_current == 0U) {
+        return s_config.sk_wpm;
+    }
+
+    return s_sk_wpm_current;
+}
+
+void keyer_service_set_sk_wpm(uint8_t wpm)
+{
+    s_config.sk_wpm = (uint8_t)keyer_clamp_tx_wpm(wpm);
+    keyer_reset_sk_adaptive_state();
+    keyer_reset_paddle_decoder_state();
+    ESP_LOGI(TAG, "straight key wpm: %u", (unsigned)s_config.sk_wpm);
+}
+
+void keyer_service_adjust_sk_wpm(int delta)
+{
+    int next = (int)s_config.sk_wpm + delta;
+    if (next < (int)KEYER_MIN_TX_WPM) {
+        next = (int)KEYER_MIN_TX_WPM;
+    } else if (next > (int)KEYER_MAX_TX_WPM) {
+        next = (int)KEYER_MAX_TX_WPM;
+    }
+
+    keyer_service_set_sk_wpm((uint8_t)next);
+}
+
 keyer_paddle_mode_t keyer_service_get_paddle_mode(void)
 {
     return s_paddle_mode;
@@ -1570,6 +1768,7 @@ void keyer_service_set_config(const keyer_config_t *config)
     s_config = *config;
     s_config.key_out_mode = keyer_clamp_key_out_mode(s_config.key_out_mode);
     s_config.paddle_mode = keyer_clamp_paddle_mode(s_config.paddle_mode);
+    s_config.sk_wpm = (uint8_t)keyer_clamp_tx_wpm(s_config.sk_wpm);
     s_config.tx_delay_s =
         keyer_clamp_u8(s_config.tx_delay_s, KEYER_TX_DELAY_MIN_S, KEYER_TX_DELAY_MAX_S);
     s_config.tune_timeout_s =
@@ -1586,6 +1785,7 @@ void keyer_service_set_config(const keyer_config_t *config)
 
     keyer_service_set_key_out_mode(s_config.key_out_mode);
     keyer_service_set_paddle_mode(s_config.paddle_mode);
+    keyer_service_set_sk_wpm(s_config.sk_wpm);
 }
 
 bool keyer_service_get_mute(void)
@@ -1921,6 +2121,13 @@ bool keyer_service_get_tune_latched(void)
 bool keyer_service_get_tune_output_active(void)
 {
     return s_tune_output_active;
+}
+
+bool keyer_service_take_sk_wpm_save_request(void)
+{
+    bool requested = s_sk_wpm_save_requested;
+    s_sk_wpm_save_requested = false;
+    return requested;
 }
 
 void keyer_service_update(void)

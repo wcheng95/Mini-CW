@@ -65,6 +65,7 @@ typedef enum {
     UI_EDIT_KEYER_TX_DELAY_S,
     UI_EDIT_KEYER_TUNE_TIMEOUT_S,
     UI_EDIT_KEYER_REPEAT_INTERVAL_S,
+    UI_EDIT_KEYER_SK_WPM,
 } ui_edit_target_t;
 
 typedef enum {
@@ -535,6 +536,7 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return UI_DELAY_S_MIN;
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
+    case UI_EDIT_KEYER_SK_WPM:
         return UI_WPM_MIN;
     case UI_EDIT_KEYER_TX_DELAY_S:
         return UI_KEYER_TX_DELAY_S_MIN;
@@ -556,6 +558,7 @@ static int ui_service_edit_max(ui_edit_target_t target)
     case UI_EDIT_TONE_HZ:
         return UI_TONE_HZ_MAX;
     case UI_EDIT_KEY_IN_WPM:
+    case UI_EDIT_KEYER_SK_WPM:
         return UI_WPM_MAX;
     case UI_EDIT_LESSON:
         return 40;
@@ -623,6 +626,7 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_CALLSIGN_DELAY_S:
     case UI_EDIT_PLAINTEXT_CODE_WPM:
     case UI_EDIT_PLAINTEXT_EFFECTIVE_WPM:
+    case UI_EDIT_KEYER_SK_WPM:
     case UI_EDIT_KEYER_TX_DELAY_S:
     case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
@@ -696,6 +700,8 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return keyer_service_get_tune_timeout_s();
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return keyer_service_get_repeat_interval_s();
+    case UI_EDIT_KEYER_SK_WPM:
+        return keyer_service_get_sk_wpm();
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -735,6 +741,7 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     case UI_EDIT_KEYER_TX_DELAY_S:
     case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
+    case UI_EDIT_KEYER_SK_WPM:
         return UI_INPUT_EVENT_KEYER_CONFIG_CHANGED;
     case UI_EDIT_NONE:
     default:
@@ -791,6 +798,8 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
         return UI_SETTING_KEYER_TUNE_TIMEOUT_S;
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_SETTING_KEYER_REPEAT_INTERVAL_S;
+    case UI_EDIT_KEYER_SK_WPM:
+        return UI_SETTING_KEYER_SK_WPM;
     case UI_EDIT_NONE:
     default:
         return UI_SETTING_NONE;
@@ -1571,10 +1580,13 @@ static void ui_service_render_keyer_normal(mini_cw_screen_t *screen)
     char top[UI_COLS + 1];
     char tune_line[UI_COLS + 1];
     const char *line6 = s_keyer_tx_text;
-    const char *key_in = keyer_service_key_in_mode_label(keyer_service_get_key_in_mode());
+    keyer_key_in_mode_t key_in_mode = keyer_service_get_key_in_mode();
+    const char *key_in = keyer_service_key_in_mode_label(key_in_mode);
     const char *key_out = keyer_service_key_out_mode_label(keyer_service_get_key_out_mode());
     const char *op_name = keyer_service_get_op_name();
-    uint8_t wpm = keyer_service_get_key_in_wpm();
+    uint8_t wpm = (key_in_mode == KEYER_KEY_IN_SK_T || key_in_mode == KEYER_KEY_IN_SK_R)
+                      ? keyer_service_get_sk_wpm()
+                      : keyer_service_get_key_in_wpm();
 
     if (screen == NULL) {
         return;
@@ -1829,7 +1841,12 @@ static void ui_service_render_keyer_menu(void)
                      "4 myCall:%.11s",
                      keyer_service_get_mycall());
         }
-        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "");
+        ui_service_format_value_line(screen.line[4],
+                                     sizeof(screen.line[4]),
+                                     5U,
+                                     "5 SK Wpm:",
+                                     keyer_service_get_sk_wpm(),
+                                     "");
         ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "");
     }
 
@@ -2169,6 +2186,8 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
                 target = UI_EDIT_KEYER_TX_DELAY_S;
             } else if (item == 3U) {
                 target = UI_EDIT_KEYER_TUNE_TIMEOUT_S;
+            } else if (item == 5U) {
+                target = UI_EDIT_KEYER_SK_WPM;
             }
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {

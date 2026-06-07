@@ -63,6 +63,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_TUNE_TIMEOUT_MAX 20U
 #define STORAGE_KEYER_REPEAT_MIN 1U
 #define STORAGE_KEYER_REPEAT_MAX 99U
+#define STORAGE_KEYER_SK_WPM_MIN 5U
+#define STORAGE_KEYER_SK_WPM_MAX 60U
 #define STORAGE_KEYER_OLD_DEFAULT_M2 "[" "CALL] TU [" "OP] UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_OLD_DEFAULT_M5 "BK TU GM UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_DEFAULT_M2 "TU UR CA CA BK"
@@ -102,6 +104,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_M5 (1UL << 30)
 #define STORAGE_KEY_KEYER_TUNE_TIMEOUT (1UL << 31)
 #define STORAGE_KEY_KEYER_MYCALL (1ULL << 32)
+#define STORAGE_KEY_KEYER_SK_WPM (1ULL << 33)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -126,6 +129,7 @@ static const char *TAG = "storage_service";
       STORAGE_KEY_KEYER_TX_DELAY | STORAGE_KEY_KEYER_REPEAT | STORAGE_KEY_KEYER_M1 |  \
       STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
       STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT | STORAGE_KEY_KEYER_MYCALL | \
+      STORAGE_KEY_KEYER_SK_WPM |                                                      \
       STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
@@ -627,6 +631,7 @@ static void storage_settings_set_defaults(void)
     s_keyer_config = (keyer_config_t){
         .key_out_mode = KEYER_KEY_OUT_PADDLE,
         .paddle_mode = KEYER_PADDLE_IAMBIC_B,
+        .sk_wpm = 19,
         .tx_delay_s = 1,
         .tune_timeout_s = 10,
         .repeat_interval_s = 6,
@@ -719,6 +724,10 @@ static void storage_normalize_keyer_config(bool *changed)
         s_keyer_config.paddle_mode = KEYER_PADDLE_IAMBIC_B;
     }
 
+    s_keyer_config.sk_wpm =
+        storage_clamp_u8(s_keyer_config.sk_wpm,
+                         STORAGE_KEYER_SK_WPM_MIN,
+                         STORAGE_KEYER_SK_WPM_MAX);
     s_keyer_config.tx_delay_s =
         storage_clamp_u8(s_keyer_config.tx_delay_s,
                          STORAGE_KEYER_TX_DELAY_MIN,
@@ -1051,6 +1060,13 @@ static void storage_apply_setting(storage_setting_section_t section,
             } else if (changed != NULL) {
                 *changed = true;
             }
+        } else if (storage_str_equal_ignore_case(key, "sk_wpm")) {
+            *seen_keys |= STORAGE_KEY_KEYER_SK_WPM;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_KEYER_SK_WPM_MIN,
+                                           STORAGE_KEYER_SK_WPM_MAX,
+                                           &s_keyer_config.sk_wpm,
+                                           changed);
         } else if (storage_str_equal_ignore_case(key, "tx_delay_s")) {
             *seen_keys |= STORAGE_KEY_KEYER_TX_DELAY;
             (void)storage_apply_u8_setting(value,
@@ -1287,6 +1303,7 @@ static bool storage_write_settings_file(void)
                            "[keyer]\n"
                            "key_out=%s\n"
                             "paddle=%s\n"
+                            "sk_wpm=%u\n"
                             "tx_delay_s=%u\n"
                             "tune_timeout_s=%u\n"
                             "repeat_interval_s=%u\n"
@@ -1327,6 +1344,7 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_system_config.key_in_wpm,
                            storage_key_out_mode_label(s_keyer_config.key_out_mode),
                             keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
+                            (unsigned)s_keyer_config.sk_wpm,
                             (unsigned)s_keyer_config.tx_delay_s,
                             (unsigned)s_keyer_config.tune_timeout_s,
                             (unsigned)s_keyer_config.repeat_interval_s,
@@ -1509,6 +1527,11 @@ bool storage_profile_load(void)
     }
 
     (void)fclose(file);
+
+    if ((seen_keys & STORAGE_KEY_KEYER_SK_WPM) == 0U) {
+        s_keyer_config.sk_wpm = s_system_config.key_in_wpm;
+        needs_rewrite = true;
+    }
 
     storage_normalize_all_settings(&needs_rewrite);
     if ((seen_keys & STORAGE_EXPECTED_KEYS) != STORAGE_EXPECTED_KEYS ||

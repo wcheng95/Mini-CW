@@ -555,6 +555,11 @@ static void app_core_keyer_set_tune_latched(bool latched)
 
 static void app_core_keyer_update(void)
 {
+    if (keyer_service_take_sk_wpm_save_request()) {
+        app_core_mark_keyer_config_dirty();
+        ui_service_refresh();
+    }
+
     if (s_keyer.tune_active) {
         if (s_keyer.tune_timeout_pending && !keyer_service_get_tune_latched()) {
             s_keyer.tune_timeout_pending = false;
@@ -681,6 +686,9 @@ static void app_core_handle_keyer_config_changed(const ui_input_event_t *event)
     case UI_SETTING_KEYER_REPEAT_INTERVAL_S:
         config.repeat_interval_s = (uint8_t)event->value;
         break;
+    case UI_SETTING_KEYER_SK_WPM:
+        config.sk_wpm = (uint8_t)event->value;
+        break;
     case UI_SETTING_KEYER_MYCALL:
         snprintf(config.mycall,
                  sizeof(config.mycall),
@@ -790,6 +798,7 @@ static void app_core_handle_lesson_config_changed(const ui_input_event_t *event)
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
+        case UI_SETTING_KEYER_SK_WPM:
         default:
             break;
         }
@@ -842,6 +851,7 @@ static void app_core_handle_word_config_changed(const ui_input_event_t *event)
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
+        case UI_SETTING_KEYER_SK_WPM:
         default:
             break;
         }
@@ -890,6 +900,7 @@ static void app_core_handle_callsign_config_changed(const ui_input_event_t *even
         case UI_SETTING_PLAINTEXT_CODE_WPM:
         case UI_SETTING_PLAINTEXT_EFFECTIVE_WPM:
         case UI_SETTING_USB_DRIVE:
+        case UI_SETTING_KEYER_SK_WPM:
         default:
             break;
         }
@@ -934,6 +945,7 @@ static void app_core_handle_plaintext_config_changed(const ui_input_event_t *eve
         case UI_SETTING_CALLSIGN_MAX_WPM:
         case UI_SETTING_CALLSIGN_DELAY_S:
         case UI_SETTING_USB_DRIVE:
+        case UI_SETTING_KEYER_SK_WPM:
         default:
             break;
         }
@@ -1055,16 +1067,14 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
         return true;
     case KEYER_EVENT_ENTER:
         return false;
+    case KEYER_EVENT_TX_CANCELLED:
+        s_keyer.tx_pending = false;
+        app_core_keyer_cancel_repeat();
+        s_keyer.last_append_was_message = false;
+        app_core_keyer_sync_tx_display(true);
+        return true;
     case KEYER_EVENT_DIT:
     case KEYER_EVENT_DAH:
-        if (s_keyer.tx_pending || s_keyer.m1_repeat_active ||
-            s_keyer.tx_revision != keyer_service_tx_revision()) {
-            s_keyer.tx_pending = false;
-            app_core_keyer_cancel_repeat();
-            s_keyer.last_append_was_message = false;
-            app_core_keyer_sync_tx_display(true);
-            return true;
-        }
         break;
     case KEYER_EVENT_TIMING_WARNING:
     case KEYER_EVENT_TIMING_ERROR:
@@ -1103,6 +1113,7 @@ static void app_core_handle_keyer_event(const keyer_event_t *event)
             break;
         case KEYER_EVENT_DIT:
         case KEYER_EVENT_DAH:
+        case KEYER_EVENT_TX_CANCELLED:
         case KEYER_EVENT_TIMING_WARNING:
         case KEYER_EVENT_TIMING_ERROR:
         case KEYER_EVENT_NONE:

@@ -65,6 +65,9 @@ The Keyer top row is a fixed 20-character white status line:
 Keyer [keyIn] [keyOut] [WPM]
 ```
 
+In paddle modes, `WPM` is the KeyIn WPM. In straight-key modes, `WPM` is the
+active adaptive `SK Wpm`.
+
 If Keyer OP lookup has a current match, the top row switches to:
 
 ```text
@@ -135,6 +138,7 @@ Page 3
 2 txDelay   0..99 seconds
 3 TuneTimeout 0..20 seconds, 0 means no timeout
 4 myCall    AG6AQ (optional, exclude myCall from OP lookup)
+5 SK Wpm    5..60, straight-key decoder seed/adaptive saved speed
 ```
 
 M1 repeats at `RepeatInt` after the FIFO drains. Keyboard input or selecting
@@ -249,6 +253,10 @@ SK-T      G13/Tip straight key input, ignore ring
 SK-R      G15/Ring straight key input, ignore tip
 ```
 
+Straight-key decoding starts from saved `SK Wpm`, adapts to measured key-down
+durations, and saves the adapted speed only after it remains stable for about 2
+minutes of straight-key use.
+
 ## KeyOut Modes
 
 KeyOut uses active-low open-drain outputs: G3 is tip and G6 is ring.
@@ -267,8 +275,8 @@ Lessons, Words, Calls, and Plain currently use firmware-generated or
 firmware-built-in practice data.
 
 Settings are saved in FATFS as `/fatfs/setting.txt`. Saved settings include
-system volume/tone/keyIn/WPM; Keyer keyOut, paddle, txDelay, TuneTimeout,
-RepeatInt, mycall, and M1-M5; and trainer mode configuration. Keyer Mute is
+system volume/tone/keyIn/WPM; Keyer keyOut, paddle, SK Wpm, txDelay,
+TuneTimeout, RepeatInt, mycall, and M1-M5; and trainer mode configuration. Keyer Mute is
 intentionally not persisted.
 
 Keyer OP lookup data is read from `/fatfs/qsocalls.csv` and is not rewritten by

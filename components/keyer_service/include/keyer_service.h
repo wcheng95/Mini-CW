@@ -58,6 +58,7 @@ typedef enum {
 typedef struct {
     keyer_key_out_mode_t key_out_mode;
     keyer_paddle_mode_t paddle_mode;
+    uint8_t sk_wpm;
     uint8_t tx_delay_s;
     uint8_t tune_timeout_s;
     uint8_t repeat_interval_s;
@@ -69,6 +70,7 @@ typedef enum {
     KEYER_EVENT_NONE = 0,
     KEYER_EVENT_DIT,
     KEYER_EVENT_DAH,
+    KEYER_EVENT_TX_CANCELLED,
     KEYER_EVENT_CHAR_COMPLETE,
     KEYER_EVENT_BACKSPACE,
     KEYER_EVENT_ENTER,
@@ -93,6 +95,9 @@ void keyer_service_cycle_key_out_mode(int direction);
 uint8_t keyer_service_get_key_in_wpm(void);
 void keyer_service_set_key_in_wpm(uint8_t wpm);
 void keyer_service_adjust_key_in_wpm(int delta);
+uint8_t keyer_service_get_sk_wpm(void);
+void keyer_service_set_sk_wpm(uint8_t wpm);
+void keyer_service_adjust_sk_wpm(int delta);
 keyer_paddle_mode_t keyer_service_get_paddle_mode(void);
 void keyer_service_set_paddle_mode(keyer_paddle_mode_t mode);
 void keyer_service_cycle_paddle_mode(int direction);
@@ -141,6 +146,7 @@ bool keyer_service_get_tune_active(void);
 void keyer_service_set_tune_latched(bool latched);
 bool keyer_service_get_tune_latched(void);
 bool keyer_service_get_tune_output_active(void);
+bool keyer_service_take_sk_wpm_save_request(void);
 void keyer_service_update(void);
 keyer_event_t keyer_service_poll_event(void);
 
