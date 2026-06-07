@@ -1076,8 +1076,6 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
     case KEYER_EVENT_DIT:
     case KEYER_EVENT_DAH:
         break;
-    case KEYER_EVENT_TIMING_WARNING:
-    case KEYER_EVENT_TIMING_ERROR:
     case KEYER_EVENT_NONE:
     default:
         break;
@@ -1114,8 +1112,6 @@ static void app_core_handle_keyer_event(const keyer_event_t *event)
         case KEYER_EVENT_DIT:
         case KEYER_EVENT_DAH:
         case KEYER_EVENT_TX_CANCELLED:
-        case KEYER_EVENT_TIMING_WARNING:
-        case KEYER_EVENT_TIMING_ERROR:
         case KEYER_EVENT_NONE:
         default:
             break;

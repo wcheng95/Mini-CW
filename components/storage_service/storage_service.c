@@ -1321,15 +1321,15 @@ static bool storage_write_settings_file(void)
                            "\n"
                            "[keyer]\n"
                            "key_out=%s\n"
-                            "paddle=%s\n"
-                            "sk_wpm=%u\n"
-                            "tx_delay_s=%u\n"
-                            "tune_timeout_s=%u\n"
-                            "repeat_interval_s=%u\n"
-                            "mycall=%s\n"
-                            "m1=%s\n"
-                            "m2=%s\n"
-                            "m3=%s\n"
+                           "paddle=%s\n"
+                           "sk_wpm=%u\n"
+                           "tx_delay_s=%u\n"
+                           "tune_timeout_s=%u\n"
+                           "repeat_interval_s=%u\n"
+                           "mycall=%s\n"
+                           "m1=%s\n"
+                           "m2=%s\n"
+                           "m3=%s\n"
                            "m4=%s\n"
                            "m5=%s\n"
                            "\n"
@@ -1362,15 +1362,15 @@ static bool storage_write_settings_file(void)
                            storage_key_in_mode_label(s_system_config.key_in_mode),
                            (unsigned)s_system_config.key_in_wpm,
                            storage_key_out_mode_label(s_keyer_config.key_out_mode),
-                            keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
-                            (unsigned)s_keyer_config.sk_wpm,
-                            (unsigned)s_keyer_config.tx_delay_s,
-                            (unsigned)s_keyer_config.tune_timeout_s,
-                            (unsigned)s_keyer_config.repeat_interval_s,
-                            s_keyer_config.mycall,
-                            s_keyer_config.message[0],
-                            s_keyer_config.message[1],
-                            s_keyer_config.message[2],
+                           keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
+                           (unsigned)s_keyer_config.sk_wpm,
+                           (unsigned)s_keyer_config.tx_delay_s,
+                           (unsigned)s_keyer_config.tune_timeout_s,
+                           (unsigned)s_keyer_config.repeat_interval_s,
+                           s_keyer_config.mycall,
+                           s_keyer_config.message[0],
+                           s_keyer_config.message[1],
+                           s_keyer_config.message[2],
                            s_keyer_config.message[3],
                            s_keyer_config.message[4],
                            (unsigned)s_lesson_config.lesson,

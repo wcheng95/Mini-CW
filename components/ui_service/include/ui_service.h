@@ -114,7 +114,6 @@ void ui_service_keyer_append_decoded_char(char ch);
 void ui_service_keyer_backspace_decoded(void);
 void ui_service_keyer_clear_decoded(void);
 void ui_service_keyer_set_tx_text(const char *text);
-void ui_service_keyer_clear_tx_text(void);
 void ui_service_keyer_set_status(const char *text);
 bool ui_service_keyer_shortcut_active(void);
 void ui_service_keyer_set_tune_active(bool active);

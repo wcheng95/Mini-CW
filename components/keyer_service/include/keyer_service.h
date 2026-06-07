@@ -1,8 +1,7 @@
 /*
  * keyer_service
  *
- * Responsibility: Owns paddle/key input abstraction for straight key, single
- * paddle, and dual paddle future support.
+ * Responsibility: Owns KeyIn/KeyOut timing for paddle and straight-key modes.
  * Hardware ownership: paddle/key GPIO or its HAL owner. Other modules consume
  * keyer events and must not read raw key/paddle GPIO.
  */
@@ -16,12 +15,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-typedef enum {
-    KEYER_INPUT_STRAIGHT_KEY = 0,
-    KEYER_INPUT_SINGLE_PADDLE,
-    KEYER_INPUT_DUAL_PADDLE,
-} keyer_input_mode_t;
 
 #define KEYER_MESSAGE_COUNT 5U
 #define KEYER_MESSAGE_MAX_LEN 95U
@@ -75,8 +68,6 @@ typedef enum {
     KEYER_EVENT_BACKSPACE,
     KEYER_EVENT_ENTER,
     KEYER_EVENT_WORD_SPACE,
-    KEYER_EVENT_TIMING_WARNING,
-    KEYER_EVENT_TIMING_ERROR,
 } keyer_event_type_t;
 
 typedef struct {
@@ -121,13 +112,6 @@ const char *keyer_service_key_in_mode_label(keyer_key_in_mode_t mode);
 const char *keyer_service_key_out_mode_label(keyer_key_out_mode_t mode);
 const char *keyer_service_paddle_mode_label(keyer_paddle_mode_t mode);
 
-void keyer_service_set_input_mode(keyer_input_mode_t mode);
-uint16_t keyer_service_get_tx_wpm(void);
-void keyer_service_set_tx_wpm(uint16_t wpm);
-void keyer_service_adjust_tx_wpm(int delta);
-uint16_t keyer_service_get_dit_ms(void);
-void keyer_service_play_text(const char *text);
-void keyer_service_stop_tx(void);
 bool keyer_service_is_tx_active(void);
 bool keyer_service_tx_append_text(const char *text, bool insert_space);
 bool keyer_service_tx_backspace(void);

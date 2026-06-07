@@ -180,8 +180,7 @@ void ui_screen_init(void)
     /*
      * Step 1 keeps hardware initialization owned by ui_service_init(), which
      * initializes the Cardputer display/keyboard port. This renderer only owns
-     * fixed layout state and drawing. TODO: expose an explicit display-ready
-     * query from the UI port if later startup paths render before ui_service_init().
+     * fixed layout state and drawing.
      */
     s_initialized = true;
     ESP_LOGI(TAG, "fixed 240x135 screen renderer initialized");

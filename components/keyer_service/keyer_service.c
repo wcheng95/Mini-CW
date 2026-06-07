@@ -169,20 +169,6 @@ static uint16_t keyer_clamp_tx_wpm(uint16_t wpm)
     return wpm;
 }
 
-static const char *keyer_input_mode_name(keyer_input_mode_t mode)
-{
-    switch (mode) {
-    case KEYER_INPUT_STRAIGHT_KEY:
-        return "straight key";
-    case KEYER_INPUT_SINGLE_PADDLE:
-        return "single paddle";
-    case KEYER_INPUT_DUAL_PADDLE:
-        return "dual paddle";
-    default:
-        return "unknown";
-    }
-}
-
 static keyer_key_in_mode_t keyer_clamp_key_in_mode(keyer_key_in_mode_t mode)
 {
     if ((int)mode < 0 || (int)mode >= KEYER_KEY_IN_MODE_COUNT) {
@@ -1859,43 +1845,6 @@ const char *keyer_service_paddle_mode_label(keyer_paddle_mode_t mode)
     }
 }
 
-void keyer_service_set_input_mode(keyer_input_mode_t mode)
-{
-    switch (mode) {
-    case KEYER_INPUT_STRAIGHT_KEY:
-        keyer_service_set_key_in_mode(KEYER_KEY_IN_SK_T);
-        break;
-    case KEYER_INPUT_SINGLE_PADDLE:
-    case KEYER_INPUT_DUAL_PADDLE:
-        keyer_service_set_key_in_mode(KEYER_KEY_IN_PADDLE);
-        break;
-    default:
-        ESP_LOGW(TAG, "unknown legacy input mode: %s", keyer_input_mode_name(mode));
-        keyer_service_set_key_in_mode(KEYER_KEY_IN_PADDLE);
-        break;
-    }
-}
-
-uint16_t keyer_service_get_tx_wpm(void)
-{
-    return s_key_in_wpm;
-}
-
-void keyer_service_set_tx_wpm(uint16_t wpm)
-{
-    keyer_service_set_key_in_wpm((uint8_t)keyer_clamp_tx_wpm(wpm));
-}
-
-void keyer_service_adjust_tx_wpm(int delta)
-{
-    keyer_service_adjust_key_in_wpm(delta);
-}
-
-uint16_t keyer_service_get_dit_ms(void)
-{
-    return keyer_dit_ms();
-}
-
 bool keyer_service_tx_append_text(const char *text, bool insert_space)
 {
     size_t text_len;
@@ -2047,22 +1996,6 @@ void keyer_service_clear_op_name(void)
 {
     keyer_op_clear_display();
     keyer_op_reset_stream();
-}
-
-void keyer_service_play_text(const char *text)
-{
-    if (text == NULL || text[0] == '\0') {
-        return;
-    }
-
-    keyer_service_tx_clear();
-    (void)keyer_service_tx_append_text(text, false);
-    keyer_service_tx_start();
-}
-
-void keyer_service_stop_tx(void)
-{
-    keyer_service_tx_clear();
 }
 
 bool keyer_service_is_tx_active(void)

@@ -457,11 +457,6 @@ void ui_service_keyer_set_tx_text(const char *text)
     snprintf(s_keyer_tx_text, sizeof(s_keyer_tx_text), "%s", text ? text : "");
 }
 
-void ui_service_keyer_clear_tx_text(void)
-{
-    s_keyer_tx_text[0] = '\0';
-}
-
 void ui_service_keyer_set_status(const char *text)
 {
     snprintf(s_keyer_status_text, sizeof(s_keyer_status_text), "%s", text ? text : "");
@@ -1222,7 +1217,7 @@ static void ui_service_set_bottom_status(mini_cw_screen_t *screen)
     snprintf(status,
              sizeof(status),
              "TX:%u T:%uHz V:%u",
-             (unsigned)keyer_service_get_tx_wpm(),
+             (unsigned)keyer_service_get_key_in_wpm(),
              (unsigned)audio_service_get_tone_hz(),
              (unsigned)audio_service_get_volume());
     ui_service_set_text(screen->line[UI_MODE_LINES - 1U],
@@ -2536,6 +2531,7 @@ static bool ui_service_handle_text_cursor_input(const ui_cardputer_port_event_t 
 
 static bool ui_service_emit_keyer_wpm_delta(char key, ui_input_event_t *out_event)
 {
+    char status[UI_COLS + 1];
     int next;
 
     if (key != '[' && key != ']') {
@@ -2550,6 +2546,8 @@ static bool ui_service_emit_keyer_wpm_delta(char key, ui_input_event_t *out_even
         out_event->value = next;
         out_event->delta = key == ']' ? 1 : -1;
     }
+    snprintf(status, sizeof(status), "Wpm:%d", next);
+    ui_service_keyer_set_status(status);
     return true;
 }
 
