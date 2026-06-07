@@ -1650,8 +1650,8 @@ static void ui_service_render_system_normal(mini_cw_screen_t *screen)
         return;
     }
 
-    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "System ready");
-    ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl settings");
+    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "Mini-CW V1.1");
+    ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl->Change Setting");
 }
 
 static void ui_service_render_normal(void)
@@ -1680,7 +1680,7 @@ static void ui_service_render_normal(void)
         ui_service_render_keyer_normal(&screen);
         break;
     }
-    if (s_ui.mode != UI_SERVICE_MODE_KEYER) {
+    if (s_ui.mode != UI_SERVICE_MODE_KEYER && s_ui.mode != UI_SERVICE_MODE_SYSTEM) {
         ui_service_set_bottom_status(&screen);
     }
     ui_screen_render(&screen);

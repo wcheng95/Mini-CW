@@ -65,10 +65,18 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_REPEAT_MAX 99U
 #define STORAGE_KEYER_SK_WPM_MIN 5U
 #define STORAGE_KEYER_SK_WPM_MAX 60U
+#define STORAGE_KEYER_DEFAULT_M1 "CQ POTA"
+#define STORAGE_KEYER_DEFAULT_M2 ""
+#define STORAGE_KEYER_DEFAULT_M3 ""
+#define STORAGE_KEYER_DEFAULT_M4 ""
+#define STORAGE_KEYER_DEFAULT_M5 ""
+#define STORAGE_KEYER_PREVIOUS_DEFAULT_M1 "CQ SOTA DE AG6AQ"
+#define STORAGE_KEYER_PREVIOUS_DEFAULT_M2 "TU UR CA CA BK"
+#define STORAGE_KEYER_PREVIOUS_DEFAULT_M3 "BK TU 72 DE AG6AQ E E"
+#define STORAGE_KEYER_PREVIOUS_DEFAULT_M4 "AG6AQ"
+#define STORAGE_KEYER_PREVIOUS_DEFAULT_M5 "BK TU GM UR 599 599 CA CA BK"
 #define STORAGE_KEYER_OLD_DEFAULT_M2 "[" "CALL] TU [" "OP] UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_OLD_DEFAULT_M5 "BK TU GM UR [" "599]*2 CA CA BK"
-#define STORAGE_KEYER_DEFAULT_M2 "TU UR CA CA BK"
-#define STORAGE_KEYER_DEFAULT_M5 "BK TU GM UR 599 599 CA CA BK"
 #define STORAGE_KEYER_DEFAULT_MYCALL "AG6AQ"
 
 #define STORAGE_KEY_SYSTEM_VOLUME (1UL << 0)
@@ -622,7 +630,7 @@ static bool storage_parse_paddle_mode(const char *value, keyer_paddle_mode_t *ou
 static void storage_settings_set_defaults(void)
 {
     s_system_config = (storage_system_config_t){
-        .volume = 40,
+        .volume = 80,
         .tone_hz = 700,
         .key_in_mode = KEYER_KEY_IN_PADDLE,
         .key_in_wpm = 19,
@@ -630,17 +638,17 @@ static void storage_settings_set_defaults(void)
 
     s_keyer_config = (keyer_config_t){
         .key_out_mode = KEYER_KEY_OUT_PADDLE,
-        .paddle_mode = KEYER_PADDLE_IAMBIC_B,
+        .paddle_mode = KEYER_PADDLE_IAMBIC_A,
         .sk_wpm = 19,
-        .tx_delay_s = 1,
+        .tx_delay_s = 0,
         .tune_timeout_s = 10,
         .repeat_interval_s = 6,
         .mycall = STORAGE_KEYER_DEFAULT_MYCALL,
         .message = {
-            "CQ SOTA DE AG6AQ",
+            STORAGE_KEYER_DEFAULT_M1,
             STORAGE_KEYER_DEFAULT_M2,
-            "BK TU 72 DE AG6AQ E E",
-            "AG6AQ",
+            STORAGE_KEYER_DEFAULT_M3,
+            STORAGE_KEYER_DEFAULT_M4,
             STORAGE_KEYER_DEFAULT_M5,
         },
     };
@@ -721,7 +729,7 @@ static void storage_normalize_keyer_config(bool *changed)
 
     if ((int)s_keyer_config.paddle_mode < (int)KEYER_PADDLE_IAMBIC_A ||
         (int)s_keyer_config.paddle_mode > (int)KEYER_PADDLE_BUG) {
-        s_keyer_config.paddle_mode = KEYER_PADDLE_IAMBIC_B;
+        s_keyer_config.paddle_mode = KEYER_PADDLE_IAMBIC_A;
     }
 
     s_keyer_config.sk_wpm =
@@ -750,10 +758,21 @@ static void storage_normalize_keyer_config(bool *changed)
         storage_copy_keyer_mycall(s_keyer_config.mycall, STORAGE_KEYER_DEFAULT_MYCALL);
     }
 
-    if (strcmp(s_keyer_config.message[1], STORAGE_KEYER_OLD_DEFAULT_M2) == 0) {
+    if (strcmp(s_keyer_config.message[0], STORAGE_KEYER_PREVIOUS_DEFAULT_M1) == 0) {
+        storage_copy_keyer_message(s_keyer_config.message[0], STORAGE_KEYER_DEFAULT_M1);
+    }
+    if (strcmp(s_keyer_config.message[1], STORAGE_KEYER_OLD_DEFAULT_M2) == 0 ||
+        strcmp(s_keyer_config.message[1], STORAGE_KEYER_PREVIOUS_DEFAULT_M2) == 0) {
         storage_copy_keyer_message(s_keyer_config.message[1], STORAGE_KEYER_DEFAULT_M2);
     }
-    if (strcmp(s_keyer_config.message[4], STORAGE_KEYER_OLD_DEFAULT_M5) == 0) {
+    if (strcmp(s_keyer_config.message[2], STORAGE_KEYER_PREVIOUS_DEFAULT_M3) == 0) {
+        storage_copy_keyer_message(s_keyer_config.message[2], STORAGE_KEYER_DEFAULT_M3);
+    }
+    if (strcmp(s_keyer_config.message[3], STORAGE_KEYER_PREVIOUS_DEFAULT_M4) == 0) {
+        storage_copy_keyer_message(s_keyer_config.message[3], STORAGE_KEYER_DEFAULT_M4);
+    }
+    if (strcmp(s_keyer_config.message[4], STORAGE_KEYER_OLD_DEFAULT_M5) == 0 ||
+        strcmp(s_keyer_config.message[4], STORAGE_KEYER_PREVIOUS_DEFAULT_M5) == 0) {
         storage_copy_keyer_message(s_keyer_config.message[4], STORAGE_KEYER_DEFAULT_M5);
     }
 

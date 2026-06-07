@@ -126,11 +126,11 @@ Page 1
 6 keyOut    Pdl, Pdl-R, SK, SK-M, OFF
 
 Page 2
-1 M1        CQ SOTA DE AG6AQ
-2 M2        CQ POTA DE AG6AQ
-3 M3        
-4 M4        AG6AQ
-5 M5        BK TU UR 5NN 5NN CA CA BK
+1 M1        CQ POTA
+2 M2
+3 M3
+4 M4
+5 M5
 6 RepeatInt 1..99 seconds, used by repeating M1
 
 Page 3
@@ -281,6 +281,13 @@ intentionally not persisted.
 
 Keyer OP lookup data is read from `/fatfs/qsocalls.csv` and is not rewritten by
 firmware.
+
+Mini-CW uses the shared Mini 8 MB partition layout: one factory app partition
+from `0x10000` to `0x500000`, and a 3 MB FATFS partition from `0x500000` to
+`0x800000`. FATFS survives normal app reflashes that use this same table, but
+not `erase_flash`, full-chip erase, or another partition layout change. Moving
+from the older `0x400000` FATFS layout may cause a one-time FATFS reformat on
+first boot.
 
 ## Current Limitations
 
