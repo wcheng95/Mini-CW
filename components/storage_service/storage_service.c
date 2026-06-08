@@ -79,6 +79,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_OLD_DEFAULT_M2 "[" "CALL] TU [" "OP] UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_OLD_DEFAULT_M5 "BK TU GM UR [" "599]*2 CA CA BK"
 #define STORAGE_KEYER_DEFAULT_MYCALL "AG6AQ"
+#define STORAGE_SYSTEM_DEFAULT_DATE "2026-01-01"
+#define STORAGE_SYSTEM_DEFAULT_TIME "00:00:00"
 
 #define STORAGE_KEY_SYSTEM_VOLUME (1UL << 0)
 #define STORAGE_KEY_SYSTEM_KEY_IN (1UL << 1)
@@ -114,6 +116,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_TUNE_TIMEOUT (1UL << 31)
 #define STORAGE_KEY_KEYER_MYCALL (1ULL << 32)
 #define STORAGE_KEY_KEYER_SK_WPM (1ULL << 33)
+#define STORAGE_KEY_SYSTEM_DATE (1ULL << 34)
+#define STORAGE_KEY_SYSTEM_TIME (1ULL << 35)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -125,7 +129,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_EXPECTED_KEYS                                                        \
     (STORAGE_KEY_SYSTEM_VOLUME | STORAGE_KEY_SYSTEM_KEY_IN |                         \
      STORAGE_KEY_SYSTEM_TONE_HZ | STORAGE_KEY_SYSTEM_KEY_IN_WPM |                    \
-     STORAGE_KEY_SYSTEM_USB_DRIVE |                                                  \
+     STORAGE_KEY_SYSTEM_USB_DRIVE | STORAGE_KEY_SYSTEM_DATE | STORAGE_KEY_SYSTEM_TIME | \
      STORAGE_KEY_LESSON_LESSON | STORAGE_KEY_LESSON_DURATION |                      \
      STORAGE_KEY_LESSON_CODE_WPM | STORAGE_KEY_LESSON_EFFECTIVE_WPM |               \
      STORAGE_KEY_LESSON_GROUP_LEN | STORAGE_KEY_WORD_SPEED |                        \
@@ -635,6 +639,8 @@ static void storage_settings_set_defaults(void)
         .tone_hz = 700,
         .key_in_mode = KEYER_KEY_IN_PADDLE,
         .key_in_wpm = 19,
+        .date = STORAGE_SYSTEM_DEFAULT_DATE,
+        .time = STORAGE_SYSTEM_DEFAULT_TIME,
     };
 
     s_keyer_config = (keyer_config_t){
@@ -684,6 +690,131 @@ static void storage_settings_set_defaults(void)
     };
 }
 
+static bool storage_is_leap_year(uint16_t year)
+{
+    return (year % 4U == 0U) && ((year % 100U) != 0U || (year % 400U) == 0U);
+}
+
+static uint8_t storage_days_in_month(uint16_t year, uint8_t month)
+{
+    static const uint8_t days[] = {
+        31U,
+        28U,
+        31U,
+        30U,
+        31U,
+        30U,
+        31U,
+        31U,
+        30U,
+        31U,
+        30U,
+        31U,
+    };
+
+    if (month < 1U || month > 12U) {
+        return 0U;
+    }
+
+    if (month == 2U && storage_is_leap_year(year)) {
+        return 29U;
+    }
+
+    return days[month - 1U];
+}
+
+static bool storage_parse_fixed_uint(const char *text,
+                                     size_t offset,
+                                     size_t count,
+                                     uint16_t *out_value)
+{
+    uint16_t value = 0U;
+
+    if (text == NULL || out_value == NULL || count == 0U) {
+        return false;
+    }
+
+    for (size_t i = 0U; i < count; ++i) {
+        unsigned char ch = (unsigned char)text[offset + i];
+        if (!isdigit(ch)) {
+            return false;
+        }
+        value = (uint16_t)(value * 10U + (uint16_t)(ch - '0'));
+    }
+
+    *out_value = value;
+    return true;
+}
+
+static bool storage_date_string_valid(const char *date)
+{
+    uint16_t year;
+    uint16_t month;
+    uint16_t day;
+
+    if (date == NULL || strlen(date) != STORAGE_SYSTEM_DATE_LEN) {
+        return false;
+    }
+
+    if (date[4] != '-' || date[7] != '-') {
+        return false;
+    }
+
+    if (!storage_parse_fixed_uint(date, 0U, 4U, &year) ||
+        !storage_parse_fixed_uint(date, 5U, 2U, &month) ||
+        !storage_parse_fixed_uint(date, 8U, 2U, &day)) {
+        return false;
+    }
+
+    if (year < 2024U || year > 2099U || month < 1U || month > 12U || day < 1U) {
+        return false;
+    }
+
+    return day <= storage_days_in_month(year, (uint8_t)month);
+}
+
+static bool storage_time_string_valid(const char *time)
+{
+    uint16_t hour;
+    uint16_t minute;
+    uint16_t second;
+
+    if (time == NULL || strlen(time) != STORAGE_SYSTEM_TIME_LEN) {
+        return false;
+    }
+
+    if (time[2] != ':' || time[5] != ':') {
+        return false;
+    }
+
+    if (!storage_parse_fixed_uint(time, 0U, 2U, &hour) ||
+        !storage_parse_fixed_uint(time, 3U, 2U, &minute) ||
+        !storage_parse_fixed_uint(time, 6U, 2U, &second)) {
+        return false;
+    }
+
+    return hour <= 23U && minute <= 59U && second <= 59U;
+}
+
+static bool storage_apply_datetime_string(const char *value,
+                                          char *target,
+                                          size_t target_size,
+                                          bool date_value,
+                                          bool *changed)
+{
+    bool valid = date_value ? storage_date_string_valid(value) : storage_time_string_valid(value);
+
+    if (target == NULL || target_size == 0U || !valid) {
+        if (changed != NULL) {
+            *changed = true;
+        }
+        return false;
+    }
+
+    snprintf(target, target_size, "%s", value);
+    return true;
+}
+
 static void storage_normalize_system_config(bool *changed)
 {
     uint8_t normalized_volume =
@@ -692,6 +823,19 @@ static void storage_normalize_system_config(bool *changed)
     uint8_t normalized_wpm =
         storage_clamp_u8(s_system_config.key_in_wpm, STORAGE_KEY_WPM_MIN, STORAGE_KEY_WPM_MAX);
     keyer_key_in_mode_t normalized_mode = s_system_config.key_in_mode;
+    char normalized_date[STORAGE_SYSTEM_DATE_LEN + 1U];
+    char normalized_time[STORAGE_SYSTEM_TIME_LEN + 1U];
+
+    snprintf(normalized_date,
+             sizeof(normalized_date),
+             "%s",
+             storage_date_string_valid(s_system_config.date) ? s_system_config.date
+                                                             : STORAGE_SYSTEM_DEFAULT_DATE);
+    snprintf(normalized_time,
+             sizeof(normalized_time),
+             "%s",
+             storage_time_string_valid(s_system_config.time) ? s_system_config.time
+                                                             : STORAGE_SYSTEM_DEFAULT_TIME);
 
     if (normalized_tone_hz < STORAGE_TONE_HZ_MIN) {
         normalized_tone_hz = STORAGE_TONE_HZ_MIN;
@@ -707,7 +851,9 @@ static void storage_normalize_system_config(bool *changed)
     if (normalized_volume != s_system_config.volume ||
         normalized_tone_hz != s_system_config.tone_hz ||
         normalized_wpm != s_system_config.key_in_wpm ||
-        normalized_mode != s_system_config.key_in_mode) {
+        normalized_mode != s_system_config.key_in_mode ||
+        strcmp(normalized_date, s_system_config.date) != 0 ||
+        strcmp(normalized_time, s_system_config.time) != 0) {
         if (changed != NULL) {
             *changed = true;
         }
@@ -717,6 +863,8 @@ static void storage_normalize_system_config(bool *changed)
     s_system_config.tone_hz = normalized_tone_hz;
     s_system_config.key_in_wpm = normalized_wpm;
     s_system_config.key_in_mode = normalized_mode;
+    snprintf(s_system_config.date, sizeof(s_system_config.date), "%s", normalized_date);
+    snprintf(s_system_config.time, sizeof(s_system_config.time), "%s", normalized_time);
 }
 
 static void storage_normalize_keyer_config(bool *changed)
@@ -1062,6 +1210,20 @@ static void storage_apply_setting(storage_setting_section_t section,
                     *changed = true;
                 }
             }
+        } else if (storage_str_equal_ignore_case(key, "date")) {
+            *seen_keys |= STORAGE_KEY_SYSTEM_DATE;
+            (void)storage_apply_datetime_string(value,
+                                                s_system_config.date,
+                                                sizeof(s_system_config.date),
+                                                true,
+                                                changed);
+        } else if (storage_str_equal_ignore_case(key, "time")) {
+            *seen_keys |= STORAGE_KEY_SYSTEM_TIME;
+            (void)storage_apply_datetime_string(value,
+                                                s_system_config.time,
+                                                sizeof(s_system_config.time),
+                                                false,
+                                                changed);
         }
         break;
 
@@ -1318,6 +1480,8 @@ static bool storage_write_settings_file(void)
                            "tone_hz=%u\n"
                            "key_in=%s\n"
                            "key_in_wpm=%u\n"
+                           "date=%s\n"
+                           "time=%s\n"
                            "usb_drive=off\n"
                            "\n"
                            "[keyer]\n"
@@ -1362,6 +1526,8 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_system_config.tone_hz,
                            storage_key_in_mode_label(s_system_config.key_in_mode),
                            (unsigned)s_system_config.key_in_wpm,
+                           s_system_config.date,
+                           s_system_config.time,
                            storage_key_out_mode_label(s_keyer_config.key_out_mode),
                            keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
                            (unsigned)s_keyer_config.sk_wpm,

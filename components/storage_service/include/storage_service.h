@@ -19,6 +19,9 @@
 extern "C" {
 #endif
 
+#define STORAGE_SYSTEM_DATE_LEN 10U
+#define STORAGE_SYSTEM_TIME_LEN 8U
+
 void storage_service_init(void);
 
 typedef struct {
@@ -26,6 +29,8 @@ typedef struct {
     uint16_t tone_hz;
     keyer_key_in_mode_t key_in_mode;
     uint8_t key_in_wpm;
+    char date[STORAGE_SYSTEM_DATE_LEN + 1U];
+    char time[STORAGE_SYSTEM_TIME_LEN + 1U];
 } storage_system_config_t;
 
 bool storage_profile_load(void);

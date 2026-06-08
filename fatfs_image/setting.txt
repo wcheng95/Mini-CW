@@ -6,6 +6,8 @@ volume=80
 tone_hz=700
 key_in=SK-T
 key_in_wpm=20
+date=2026-01-01
+time=00:00:00
 usb_drive=off
 
 [keyer]

@@ -78,15 +78,24 @@ typedef enum {
     UI_TEXT_EDIT_KEYER_MYCALL,
 } ui_text_edit_target_t;
 
+typedef enum {
+    UI_DATETIME_EDIT_NONE = 0,
+    UI_DATETIME_EDIT_DATE,
+    UI_DATETIME_EDIT_TIME,
+} ui_datetime_edit_target_t;
+
 typedef struct {
     ui_service_mode_t mode;
     ui_view_t view;
     uint8_t menu_page;
     ui_edit_target_t edit_target;
     ui_text_edit_target_t text_edit_target;
+    ui_datetime_edit_target_t datetime_edit_target;
     uint8_t edit_item;
     char edit_buf[4];
     char text_edit_buf[KEYER_MESSAGE_MAX_LEN + 1U];
+    char datetime_edit_buf[STORAGE_SYSTEM_DATE_LEN + 1U];
+    size_t datetime_edit_cursor;
     size_t text_edit_cursor;
     bool text_edit_cursor_repeat_active;
     char text_edit_cursor_repeat_key;
@@ -112,9 +121,12 @@ static ui_service_state_t s_ui = {
     .menu_page = 0U,
     .edit_target = UI_EDIT_NONE,
     .text_edit_target = UI_TEXT_EDIT_NONE,
+    .datetime_edit_target = UI_DATETIME_EDIT_NONE,
     .edit_item = 0U,
     .edit_buf = "",
     .text_edit_buf = "",
+    .datetime_edit_buf = "",
+    .datetime_edit_cursor = 0U,
     .text_edit_cursor = 0U,
     .text_edit_cursor_repeat_active = false,
     .text_edit_cursor_repeat_key = '\0',
@@ -148,6 +160,8 @@ static bool s_cardputer_ready;
 #define UI_KEYER_HISTORY_CAPACITY (UI_KEYER_HISTORY_LINES * UI_COLS)
 #define UI_TEXT_CURSOR_REPEAT_DELAY_MS 400U
 #define UI_TEXT_CURSOR_REPEAT_INTERVAL_MS 100U
+#define UI_SYSTEM_DEFAULT_DATE "2026-01-01"
+#define UI_SYSTEM_DEFAULT_TIME "00:00:00"
 
 static char s_keyer_history[UI_KEYER_HISTORY_CAPACITY + 1U];
 static uint16_t s_keyer_history_len;
@@ -249,6 +263,11 @@ static bool ui_service_is_text_editing(void)
     return s_ui.text_edit_target != UI_TEXT_EDIT_NONE;
 }
 
+static bool ui_service_is_datetime_editing(void)
+{
+    return s_ui.datetime_edit_target != UI_DATETIME_EDIT_NONE;
+}
+
 static void ui_service_reset_text_cursor_repeat(void)
 {
     s_ui.text_edit_cursor_repeat_active = false;
@@ -306,9 +325,12 @@ static void ui_service_clear_edit(void)
 {
     s_ui.edit_target = UI_EDIT_NONE;
     s_ui.text_edit_target = UI_TEXT_EDIT_NONE;
+    s_ui.datetime_edit_target = UI_DATETIME_EDIT_NONE;
     s_ui.edit_item = 0U;
     s_ui.edit_buf[0] = '\0';
     s_ui.text_edit_buf[0] = '\0';
+    s_ui.datetime_edit_buf[0] = '\0';
+    s_ui.datetime_edit_cursor = 0U;
     s_ui.text_edit_cursor = 0U;
     ui_service_reset_text_cursor_repeat();
     s_ui.edit_user_digits = false;
@@ -817,6 +839,8 @@ static void ui_service_set_edit_buf_value(int value)
 static void ui_service_begin_numeric_edit(uint8_t item, ui_edit_target_t target)
 {
     s_ui.edit_target = target;
+    s_ui.text_edit_target = UI_TEXT_EDIT_NONE;
+    s_ui.datetime_edit_target = UI_DATETIME_EDIT_NONE;
     s_ui.edit_item = item;
     s_ui.edit_user_digits = false;
     ui_service_set_edit_buf_value(ui_service_get_edit_value(target));
@@ -1002,6 +1026,7 @@ static void ui_service_begin_text_edit(uint8_t item, ui_text_edit_target_t targe
 
     s_ui.text_edit_target = target;
     s_ui.edit_target = UI_EDIT_NONE;
+    s_ui.datetime_edit_target = UI_DATETIME_EDIT_NONE;
     s_ui.edit_item = item;
     snprintf(s_ui.text_edit_buf,
              sizeof(s_ui.text_edit_buf),
@@ -1082,6 +1107,237 @@ static bool ui_service_handle_text_edit_char(char key, ui_input_event_t *out_eve
             len - s_ui.text_edit_cursor + 1U);
     s_ui.text_edit_buf[s_ui.text_edit_cursor] = normalized;
     ++s_ui.text_edit_cursor;
+    return true;
+}
+
+static const char *ui_service_time_source_suffix(platform_hal_time_source_t source)
+{
+    switch (source) {
+    case PLATFORM_HAL_TIME_SOURCE_DS3231:
+        return " R";
+    case PLATFORM_HAL_TIME_SOURCE_GPS:
+        return " G";
+    case PLATFORM_HAL_TIME_SOURCE_SOFTWARE:
+    default:
+        return "";
+    }
+}
+
+static void ui_service_format_datetime_date(const platform_hal_datetime_t *datetime,
+                                            char *dest,
+                                            size_t dest_size)
+{
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    if (datetime == NULL) {
+        snprintf(dest, dest_size, "%s", UI_SYSTEM_DEFAULT_DATE);
+        return;
+    }
+
+    snprintf(dest,
+             dest_size,
+             "%04u-%02u-%02u",
+             (unsigned)datetime->year,
+             (unsigned)datetime->month,
+             (unsigned)datetime->day);
+}
+
+static void ui_service_format_datetime_time(const platform_hal_datetime_t *datetime,
+                                            char *dest,
+                                            size_t dest_size)
+{
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    if (datetime == NULL) {
+        snprintf(dest, dest_size, "%s", UI_SYSTEM_DEFAULT_TIME);
+        return;
+    }
+
+    snprintf(dest,
+             dest_size,
+             "%02u:%02u:%02u",
+             (unsigned)datetime->hour,
+             (unsigned)datetime->minute,
+             (unsigned)datetime->second);
+}
+
+static size_t ui_service_datetime_edit_len(void)
+{
+    if (s_ui.datetime_edit_target == UI_DATETIME_EDIT_DATE) {
+        return STORAGE_SYSTEM_DATE_LEN;
+    }
+
+    if (s_ui.datetime_edit_target == UI_DATETIME_EDIT_TIME) {
+        return STORAGE_SYSTEM_TIME_LEN;
+    }
+
+    return 0U;
+}
+
+static bool ui_service_datetime_edit_pos_editable(size_t pos)
+{
+    size_t len = ui_service_datetime_edit_len();
+    char ch;
+
+    if (pos >= len) {
+        return false;
+    }
+
+    ch = s_ui.datetime_edit_buf[pos];
+    return ch >= '0' && ch <= '9';
+}
+
+static void ui_service_move_datetime_cursor(int delta)
+{
+    size_t len = ui_service_datetime_edit_len();
+    size_t pos = s_ui.datetime_edit_cursor;
+
+    if (!ui_service_is_datetime_editing() || len == 0U) {
+        return;
+    }
+
+    if (pos >= len) {
+        pos = 0U;
+    }
+
+    if (delta < 0) {
+        while (pos > 0U) {
+            --pos;
+            if (ui_service_datetime_edit_pos_editable(pos)) {
+                s_ui.datetime_edit_cursor = pos;
+                return;
+            }
+        }
+    } else if (delta > 0) {
+        while (pos + 1U < len) {
+            ++pos;
+            if (ui_service_datetime_edit_pos_editable(pos)) {
+                s_ui.datetime_edit_cursor = pos;
+                return;
+            }
+        }
+    }
+}
+
+static void ui_service_format_datetime_edit_value(char *dest,
+                                                  size_t dest_size,
+                                                  const char *value,
+                                                  size_t cursor)
+{
+    size_t out = 0U;
+
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    dest[0] = '\0';
+    if (value == NULL) {
+        return;
+    }
+
+    for (size_t i = 0U; value[i] != '\0' && out + 1U < dest_size; ++i) {
+        if (i == cursor && out + 3U < dest_size) {
+            dest[out++] = '[';
+            dest[out++] = value[i];
+            dest[out++] = ']';
+        } else {
+            dest[out++] = value[i];
+        }
+    }
+
+    dest[out] = '\0';
+}
+
+static void ui_service_begin_datetime_edit(uint8_t item, ui_datetime_edit_target_t target)
+{
+    platform_hal_datetime_t datetime;
+
+    if (target == UI_DATETIME_EDIT_NONE) {
+        return;
+    }
+
+    s_ui.datetime_edit_target = target;
+    s_ui.edit_target = UI_EDIT_NONE;
+    s_ui.text_edit_target = UI_TEXT_EDIT_NONE;
+    s_ui.edit_item = item;
+
+    if (platform_hal_get_datetime(&datetime) != ESP_OK) {
+        if (target == UI_DATETIME_EDIT_DATE) {
+            snprintf(s_ui.datetime_edit_buf, sizeof(s_ui.datetime_edit_buf), "%s", UI_SYSTEM_DEFAULT_DATE);
+        } else {
+            snprintf(s_ui.datetime_edit_buf, sizeof(s_ui.datetime_edit_buf), "%s", UI_SYSTEM_DEFAULT_TIME);
+        }
+    } else if (target == UI_DATETIME_EDIT_DATE) {
+        ui_service_format_datetime_date(&datetime,
+                                        s_ui.datetime_edit_buf,
+                                        sizeof(s_ui.datetime_edit_buf));
+    } else {
+        ui_service_format_datetime_time(&datetime,
+                                        s_ui.datetime_edit_buf,
+                                        sizeof(s_ui.datetime_edit_buf));
+    }
+
+    s_ui.datetime_edit_cursor = 0U;
+    ESP_LOGI(TAG, "date/time edit started: item=%u", (unsigned)item);
+}
+
+static bool ui_service_commit_datetime_edit(ui_input_event_t *out_event, char key)
+{
+    ui_setting_target_t setting;
+
+    if (!ui_service_is_datetime_editing()) {
+        return false;
+    }
+
+    setting = s_ui.datetime_edit_target == UI_DATETIME_EDIT_DATE ? UI_SETTING_SYSTEM_DATE
+                                                                 : UI_SETTING_SYSTEM_TIME;
+    ui_service_set_event(out_event, UI_INPUT_EVENT_DATETIME_CHANGED, key);
+    if (out_event != NULL) {
+        out_event->setting = setting;
+        snprintf(out_event->text, sizeof(out_event->text), "%s", s_ui.datetime_edit_buf);
+    }
+
+    ESP_LOGI(TAG, "date/time edit committed");
+    ui_service_clear_edit();
+    return true;
+}
+
+static bool ui_service_handle_datetime_edit_char(char key, ui_input_event_t *out_event)
+{
+    if (!ui_service_is_datetime_editing()) {
+        return false;
+    }
+
+    if (key == '\n' || key == '\r') {
+        return ui_service_commit_datetime_edit(out_event, key);
+    }
+
+    if (key == '`' || key == '\x1B') {
+        ui_service_clear_edit();
+        return true;
+    }
+
+    if (key == ';') {
+        ui_service_move_datetime_cursor(-1);
+        return true;
+    }
+
+    if (key == '.') {
+        ui_service_move_datetime_cursor(1);
+        return true;
+    }
+
+    if (key >= '0' && key <= '9' &&
+        ui_service_datetime_edit_pos_editable(s_ui.datetime_edit_cursor)) {
+        s_ui.datetime_edit_buf[s_ui.datetime_edit_cursor] = key;
+        ui_service_move_datetime_cursor(1);
+        return true;
+    }
+
     return true;
 }
 
@@ -1962,39 +2218,79 @@ static void ui_service_render_plaintext_menu(void)
 static void ui_service_render_system_menu(void)
 {
     mini_cw_screen_t screen;
+    platform_hal_datetime_t datetime;
+    platform_hal_datetime_t *datetime_ptr = &datetime;
+    char date_value[STORAGE_SYSTEM_DATE_LEN + 3U];
+    char time_value[STORAGE_SYSTEM_TIME_LEN + 3U];
 
     ui_service_prepare_screen(&screen);
 
-    ui_service_format_value_line(screen.line[0],
-                                 sizeof(screen.line[0]),
-                                 1U,
-                                 "1 Volume:",
-                                 audio_service_get_volume(),
-                                 "");
-    snprintf(screen.line[1],
-             sizeof(screen.line[1]),
-             "2 KeyIn:%s",
-             keyer_service_key_in_mode_label(keyer_service_get_key_in_mode()));
-    ui_service_format_value_line(screen.line[2],
-                                 sizeof(screen.line[2]),
-                                 3U,
-                                 "3 KeyIn WPM:",
-                                 keyer_service_get_key_in_wpm(),
-                                 "");
-    snprintf(screen.line[3],
-             sizeof(screen.line[3]),
-             "4 Sleep/Batt %d%%",
-             ui_service_read_battery_percent());
-    snprintf(screen.line[4],
-             sizeof(screen.line[4]),
-             "5 USB Drive:%s",
-             storage_usb_drive_is_enabled() ? "ON" : "OFF");
-    ui_service_format_value_line(screen.line[5],
-                                 sizeof(screen.line[5]),
-                                 6U,
-                                 "6 Tone:",
-                                 audio_service_get_tone_hz(),
-                                 "Hz");
+    if (s_ui.menu_page == 0U) {
+        ui_service_format_value_line(screen.line[0],
+                                     sizeof(screen.line[0]),
+                                     1U,
+                                     "1 Volume:",
+                                     audio_service_get_volume(),
+                                     "");
+        snprintf(screen.line[1],
+                 sizeof(screen.line[1]),
+                 "2 KeyIn:%s",
+                 keyer_service_key_in_mode_label(keyer_service_get_key_in_mode()));
+        ui_service_format_value_line(screen.line[2],
+                                     sizeof(screen.line[2]),
+                                     3U,
+                                     "3 KeyIn WPM:",
+                                     keyer_service_get_key_in_wpm(),
+                                     "");
+        snprintf(screen.line[3],
+                 sizeof(screen.line[3]),
+                 "4 Sleep/Batt %d%%",
+                 ui_service_read_battery_percent());
+        snprintf(screen.line[4],
+                 sizeof(screen.line[4]),
+                 "5 USB Drive:%s",
+                 storage_usb_drive_is_enabled() ? "ON" : "OFF");
+        ui_service_format_value_line(screen.line[5],
+                                     sizeof(screen.line[5]),
+                                     6U,
+                                     "6 Tone:",
+                                     audio_service_get_tone_hz(),
+                                     "Hz");
+    } else {
+        if (platform_hal_get_datetime(&datetime) != ESP_OK) {
+            datetime_ptr = NULL;
+        }
+
+        if (s_ui.datetime_edit_target == UI_DATETIME_EDIT_DATE) {
+            ui_service_format_datetime_edit_value(date_value,
+                                                  sizeof(date_value),
+                                                  s_ui.datetime_edit_buf,
+                                                  s_ui.datetime_edit_cursor);
+        } else {
+            ui_service_format_datetime_date(datetime_ptr, date_value, sizeof(date_value));
+        }
+
+        if (s_ui.datetime_edit_target == UI_DATETIME_EDIT_TIME) {
+            ui_service_format_datetime_edit_value(time_value,
+                                                  sizeof(time_value),
+                                                  s_ui.datetime_edit_buf,
+                                                  s_ui.datetime_edit_cursor);
+            snprintf(screen.line[1], sizeof(screen.line[1]), "2 Time: %s", time_value);
+        } else {
+            ui_service_format_datetime_time(datetime_ptr, time_value, sizeof(time_value));
+            snprintf(screen.line[1],
+                     sizeof(screen.line[1]),
+                     "2 Time: %s%s",
+                     time_value,
+                     datetime_ptr != NULL ? ui_service_time_source_suffix(datetime.source) : "");
+        }
+
+        snprintf(screen.line[0], sizeof(screen.line[0]), "1 Date: %s", date_value);
+        ui_service_set_text(screen.line[2], sizeof(screen.line[2]), "3");
+        ui_service_set_text(screen.line[3], sizeof(screen.line[3]), "4");
+        ui_service_set_text(screen.line[4], sizeof(screen.line[4]), "5");
+        ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "6");
+    }
 
     ui_screen_render(&screen);
 }
@@ -2185,7 +2481,7 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
                 target = UI_EDIT_KEYER_SK_WPM;
             }
         }
-    } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM) {
+    } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 0U) {
         if (item == 1U) {
             target = UI_EDIT_VOLUME;
         } else if (item == 3U) {
@@ -2345,7 +2641,17 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
         return true;
     }
 
-    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 2U) {
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 1U && item == 1U) {
+        ui_service_begin_datetime_edit(item, UI_DATETIME_EDIT_DATE);
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 1U && item == 2U) {
+        ui_service_begin_datetime_edit(item, UI_DATETIME_EDIT_TIME);
+        return true;
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 0U && item == 2U) {
         ui_service_set_event(out_event, UI_INPUT_EVENT_KEY_IN_MODE_CHANGED, key);
         if (out_event != NULL) {
             out_event->setting = UI_SETTING_KEY_IN_MODE;
@@ -2355,13 +2661,13 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
         return true;
     }
 
-    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 4U) {
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 0U && item == 4U) {
         ui_service_set_event(out_event, UI_INPUT_EVENT_SLEEP_REQUEST, key);
         ESP_LOGI(TAG, "sleep requested from system menu");
         return true;
     }
 
-    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && item == 5U) {
+    if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 0U && item == 5U) {
         ui_service_set_event(out_event, UI_INPUT_EVENT_USB_DRIVE_CHANGED, key);
         if (out_event != NULL) {
             out_event->setting = UI_SETTING_USB_DRIVE;
@@ -2378,10 +2684,14 @@ static bool ui_service_handle_menu_number(uint8_t item, char key, ui_input_event
     return true;
 }
 
-static bool ui_service_handle_menu_char(char key, ui_input_event_t *out_event)
+static bool ui_service_handle_menu_char(char key, bool fn, ui_input_event_t *out_event)
 {
     if (out_event != NULL) {
         *out_event = UI_EVENT_NONE;
+    }
+
+    if (ui_service_handle_datetime_edit_char(key, out_event)) {
+        return true;
     }
 
     if (ui_service_handle_text_edit_char(key, out_event)) {
@@ -2397,17 +2707,19 @@ static bool ui_service_handle_menu_char(char key, ui_input_event_t *out_event)
     }
 
     if (key == ';') {
-        if (s_ui.menu_page > 0U) {
+        if (!fn && s_ui.menu_page > 0U) {
             --s_ui.menu_page;
         }
-        return true;
+        return !fn;
     }
 
     if (key == '.') {
-        if (s_ui.mode == UI_SERVICE_MODE_KEYER && s_ui.menu_page < 2U) {
+        if (!fn && s_ui.mode == UI_SERVICE_MODE_KEYER && s_ui.menu_page < 2U) {
+            ++s_ui.menu_page;
+        } else if (!fn && s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page < 1U) {
             ++s_ui.menu_page;
         }
-        return true;
+        return !fn;
     }
 
     if (key == ',' || key == '/') {
@@ -2751,7 +3063,7 @@ ui_input_event_t ui_service_poll_input(void)
     if (s_ui.view == UI_VIEW_MODE_MENU) {
         ui_input_event_t menu_event = UI_EVENT_NONE;
 
-        if (ui_service_handle_menu_char(port_event.ch, &menu_event)) {
+        if (ui_service_handle_menu_char(port_event.ch, port_event.fn, &menu_event)) {
             if (menu_event.type == UI_INPUT_EVENT_NONE) {
                 ui_service_render_current_view();
             }

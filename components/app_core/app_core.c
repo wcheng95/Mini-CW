@@ -29,6 +29,9 @@ static const char *TAG = "app_core";
 
 #define APP_INPUT_POLL_MS 5U
 #define APP_SYSTEM_CONFIG_SAVE_DELAY_MS 1000U
+#define APP_SYSTEM_TIME_REFRESH_MS 1000U
+#define APP_SYSTEM_DEFAULT_DATE "2026-01-01"
+#define APP_SYSTEM_DEFAULT_TIME "00:00:00"
 
 static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
 {
@@ -52,6 +55,7 @@ static app_state_t s_app = {
 };
 static bool s_system_config_dirty;
 static TickType_t s_system_config_save_due;
+static TickType_t s_system_time_refresh_due;
 static bool s_keyer_config_dirty;
 static TickType_t s_keyer_config_save_due;
 
@@ -99,14 +103,213 @@ static void app_core_sync_mode_from_ui(void)
     ESP_LOGI(TAG, "active mode: %s", app_core_mode_to_string(s_app.mode));
 }
 
+static bool app_core_is_leap_year(uint16_t year)
+{
+    return (year % 4U == 0U) && ((year % 100U) != 0U || (year % 400U) == 0U);
+}
+
+static uint8_t app_core_days_in_month(uint16_t year, uint8_t month)
+{
+    static const uint8_t days[] = {
+        31U,
+        28U,
+        31U,
+        30U,
+        31U,
+        30U,
+        31U,
+        31U,
+        30U,
+        31U,
+        30U,
+        31U,
+    };
+
+    if (month < 1U || month > 12U) {
+        return 0U;
+    }
+
+    if (month == 2U && app_core_is_leap_year(year)) {
+        return 29U;
+    }
+
+    return days[month - 1U];
+}
+
+static bool app_core_parse_fixed_uint(const char *text,
+                                      size_t offset,
+                                      size_t count,
+                                      uint16_t *out_value)
+{
+    uint16_t value = 0U;
+
+    if (text == NULL || out_value == NULL || count == 0U) {
+        return false;
+    }
+
+    for (size_t i = 0U; i < count; ++i) {
+        unsigned char ch = (unsigned char)text[offset + i];
+        if (!isdigit(ch)) {
+            return false;
+        }
+        value = (uint16_t)(value * 10U + (uint16_t)(ch - '0'));
+    }
+
+    *out_value = value;
+    return true;
+}
+
+static bool app_core_parse_date_string(const char *date,
+                                       uint16_t *out_year,
+                                       uint8_t *out_month,
+                                       uint8_t *out_day)
+{
+    uint16_t year;
+    uint16_t month;
+    uint16_t day;
+
+    if (date == NULL || out_year == NULL || out_month == NULL || out_day == NULL ||
+        strlen(date) != STORAGE_SYSTEM_DATE_LEN) {
+        return false;
+    }
+
+    if (date[4] != '-' || date[7] != '-') {
+        return false;
+    }
+
+    if (!app_core_parse_fixed_uint(date, 0U, 4U, &year) ||
+        !app_core_parse_fixed_uint(date, 5U, 2U, &month) ||
+        !app_core_parse_fixed_uint(date, 8U, 2U, &day)) {
+        return false;
+    }
+
+    if (year < 2024U || year > 2099U || month < 1U || month > 12U || day < 1U ||
+        day > app_core_days_in_month(year, (uint8_t)month)) {
+        return false;
+    }
+
+    *out_year = year;
+    *out_month = (uint8_t)month;
+    *out_day = (uint8_t)day;
+    return true;
+}
+
+static bool app_core_parse_time_string(const char *time,
+                                       uint8_t *out_hour,
+                                       uint8_t *out_minute,
+                                       uint8_t *out_second)
+{
+    uint16_t hour;
+    uint16_t minute;
+    uint16_t second;
+
+    if (time == NULL || out_hour == NULL || out_minute == NULL || out_second == NULL ||
+        strlen(time) != STORAGE_SYSTEM_TIME_LEN) {
+        return false;
+    }
+
+    if (time[2] != ':' || time[5] != ':') {
+        return false;
+    }
+
+    if (!app_core_parse_fixed_uint(time, 0U, 2U, &hour) ||
+        !app_core_parse_fixed_uint(time, 3U, 2U, &minute) ||
+        !app_core_parse_fixed_uint(time, 6U, 2U, &second)) {
+        return false;
+    }
+
+    if (hour > 23U || minute > 59U || second > 59U) {
+        return false;
+    }
+
+    *out_hour = (uint8_t)hour;
+    *out_minute = (uint8_t)minute;
+    *out_second = (uint8_t)second;
+    return true;
+}
+
+static bool app_core_datetime_from_strings(const char *date,
+                                           const char *time,
+                                           platform_hal_datetime_t *out_datetime)
+{
+    platform_hal_datetime_t datetime = {
+        .source = PLATFORM_HAL_TIME_SOURCE_SOFTWARE,
+    };
+
+    if (out_datetime == NULL) {
+        return false;
+    }
+
+    if (!app_core_parse_date_string(date, &datetime.year, &datetime.month, &datetime.day) ||
+        !app_core_parse_time_string(time, &datetime.hour, &datetime.minute, &datetime.second)) {
+        return false;
+    }
+
+    *out_datetime = datetime;
+    return true;
+}
+
+static void app_core_format_datetime_date(const platform_hal_datetime_t *datetime,
+                                          char *dest,
+                                          size_t dest_size)
+{
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    if (datetime == NULL) {
+        snprintf(dest, dest_size, "%s", APP_SYSTEM_DEFAULT_DATE);
+        return;
+    }
+
+    snprintf(dest,
+             dest_size,
+             "%04u-%02u-%02u",
+             (unsigned)datetime->year,
+             (unsigned)datetime->month,
+             (unsigned)datetime->day);
+}
+
+static void app_core_format_datetime_time(const platform_hal_datetime_t *datetime,
+                                          char *dest,
+                                          size_t dest_size)
+{
+    if (dest == NULL || dest_size == 0U) {
+        return;
+    }
+
+    if (datetime == NULL) {
+        snprintf(dest, dest_size, "%s", APP_SYSTEM_DEFAULT_TIME);
+        return;
+    }
+
+    snprintf(dest,
+             dest_size,
+             "%02u:%02u:%02u",
+             (unsigned)datetime->hour,
+             (unsigned)datetime->minute,
+             (unsigned)datetime->second);
+}
+
 static storage_system_config_t app_core_current_system_config(void)
 {
-    return (storage_system_config_t){
+    platform_hal_datetime_t datetime;
+    storage_system_config_t config = {
         .volume = audio_service_get_volume(),
         .tone_hz = audio_service_get_tone_hz(),
         .key_in_mode = keyer_service_get_key_in_mode(),
         .key_in_wpm = keyer_service_get_key_in_wpm(),
     };
+
+    if (platform_hal_get_datetime(&datetime) == ESP_OK) {
+        app_core_format_datetime_date(&datetime, config.date, sizeof(config.date));
+        app_core_format_datetime_time(&datetime, config.time, sizeof(config.time));
+    } else {
+        snprintf(config.date, sizeof(config.date), "%s", APP_SYSTEM_DEFAULT_DATE);
+        snprintf(config.time, sizeof(config.time), "%s", APP_SYSTEM_DEFAULT_TIME);
+    }
+
+    return config;
 }
 
 static bool app_core_system_config_equal(const storage_system_config_t *a,
@@ -117,7 +320,8 @@ static bool app_core_system_config_equal(const storage_system_config_t *a,
     }
 
     return a->volume == b->volume && a->tone_hz == b->tone_hz &&
-           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm;
+           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm &&
+           strcmp(a->date, b->date) == 0 && strcmp(a->time, b->time) == 0;
 }
 
 static void app_core_mark_system_config_dirty(void)
@@ -132,6 +336,24 @@ static void app_core_mark_keyer_config_dirty(void)
     s_keyer_config_dirty = true;
     s_keyer_config_save_due =
         xTaskGetTickCount() + app_core_ms_to_delay_ticks(APP_SYSTEM_CONFIG_SAVE_DELAY_MS);
+}
+
+static void app_core_maybe_refresh_system_time(void)
+{
+    TickType_t now = xTaskGetTickCount();
+
+    if (s_app.mode != APP_MODE_SYSTEM) {
+        s_system_time_refresh_due =
+            now + app_core_ms_to_delay_ticks(APP_SYSTEM_TIME_REFRESH_MS);
+        return;
+    }
+
+    if (!app_core_tick_reached(now, s_system_time_refresh_due)) {
+        return;
+    }
+
+    s_system_time_refresh_due = now + app_core_ms_to_delay_ticks(APP_SYSTEM_TIME_REFRESH_MS);
+    ui_service_refresh();
 }
 
 static void app_core_maybe_save_dirty_config(void)
@@ -179,8 +401,10 @@ static void app_core_maybe_save_dirty_config(void)
     }
 }
 
-static void app_core_apply_system_config(const storage_system_config_t *config)
+static void app_core_apply_system_config(const storage_system_config_t *config, bool apply_datetime)
 {
+    platform_hal_datetime_t datetime;
+
     if (config == NULL) {
         return;
     }
@@ -189,6 +413,11 @@ static void app_core_apply_system_config(const storage_system_config_t *config)
     audio_service_set_tone_hz(config->tone_hz);
     keyer_service_set_key_in_mode(config->key_in_mode);
     keyer_service_set_key_in_wpm(config->key_in_wpm);
+
+    if (apply_datetime &&
+        app_core_datetime_from_strings(config->date, config->time, &datetime)) {
+        (void)platform_hal_set_datetime(&datetime, PLATFORM_HAL_TIME_SOURCE_SOFTWARE);
+    }
 }
 
 static void app_core_reload_qsocalls(void)
@@ -220,7 +449,9 @@ static void app_core_load_persisted_settings(void)
 
     system_config = app_core_current_system_config();
     if (storage_system_load_config(&system_config)) {
-        app_core_apply_system_config(&system_config);
+        bool apply_datetime =
+            platform_hal_get_time_source() != PLATFORM_HAL_TIME_SOURCE_DS3231;
+        app_core_apply_system_config(&system_config, apply_datetime);
         storage_system_config_t applied_config = app_core_current_system_config();
         if (!app_core_system_config_equal(&system_config, &applied_config)) {
             storage_system_save_config(&applied_config);
@@ -627,6 +858,52 @@ static void app_core_handle_key_in_mode_changed(const ui_input_event_t *event)
     }
 
     keyer_service_cycle_key_in_mode(direction);
+    app_core_mark_system_config_dirty();
+    ui_service_refresh();
+}
+
+static void app_core_handle_datetime_changed(const ui_input_event_t *event)
+{
+    platform_hal_datetime_t datetime;
+
+    if (event == NULL || event->text[0] == '\0') {
+        return;
+    }
+
+    if (platform_hal_get_datetime(&datetime) != ESP_OK) {
+        ESP_LOGW(TAG, "date/time edit ignored: current RTC unavailable");
+        ui_service_refresh();
+        return;
+    }
+
+    if (event->setting == UI_SETTING_SYSTEM_DATE) {
+        if (!app_core_parse_date_string(event->text,
+                                        &datetime.year,
+                                        &datetime.month,
+                                        &datetime.day)) {
+            ESP_LOGW(TAG, "date edit rejected: %s", event->text);
+            ui_service_refresh();
+            return;
+        }
+    } else if (event->setting == UI_SETTING_SYSTEM_TIME) {
+        if (!app_core_parse_time_string(event->text,
+                                        &datetime.hour,
+                                        &datetime.minute,
+                                        &datetime.second)) {
+            ESP_LOGW(TAG, "time edit rejected: %s", event->text);
+            ui_service_refresh();
+            return;
+        }
+    } else {
+        return;
+    }
+
+    if (platform_hal_set_datetime(&datetime, PLATFORM_HAL_TIME_SOURCE_SOFTWARE) != ESP_OK) {
+        ESP_LOGW(TAG, "date/time edit rejected by platform HAL");
+        ui_service_refresh();
+        return;
+    }
+
     app_core_mark_system_config_dirty();
     ui_service_refresh();
 }
@@ -1201,6 +1478,9 @@ static void app_core_handle_ui_event(ui_input_event_t event)
     case UI_INPUT_EVENT_KEY_IN_MODE_CHANGED:
         app_core_handle_key_in_mode_changed(&event);
         break;
+    case UI_INPUT_EVENT_DATETIME_CHANGED:
+        app_core_handle_datetime_changed(&event);
+        break;
     case UI_INPUT_EVENT_KEY_OUT_MODE_CHANGED:
         app_core_handle_key_out_mode_changed(&event);
         break;
@@ -1349,6 +1629,7 @@ void app_core_run(void)
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);
         app_core_keyer_update();
+        app_core_maybe_refresh_system_time();
         app_core_maybe_save_dirty_config();
         vTaskDelay(app_core_ms_to_delay_ticks(APP_INPUT_POLL_MS));
     }
