@@ -453,6 +453,10 @@ esp_err_t platform_hal_get_datetime(platform_hal_datetime_t *out_datetime)
         return ESP_ERR_INVALID_ARG;
     }
 
+    /*
+     * DS3231 is read once at boot to seed the software clock. Runtime reads use
+     * esp_timer elapsed time so UI refreshes do not repeatedly touch I2C.
+     */
     err = platform_hal_current_epoch(&epoch);
     if (err != ESP_OK) {
         return err;
@@ -465,30 +469,37 @@ esp_err_t platform_hal_get_datetime(platform_hal_datetime_t *out_datetime)
 esp_err_t platform_hal_set_datetime(const platform_hal_datetime_t *datetime,
                                     platform_hal_time_source_t source)
 {
+    platform_hal_time_source_t effective_source = source;
     esp_err_t err;
 
     if (!platform_hal_datetime_valid(datetime)) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    platform_hal_seed_software_time(datetime, source);
+    if (effective_source < PLATFORM_HAL_TIME_SOURCE_SOFTWARE ||
+        effective_source > PLATFORM_HAL_TIME_SOURCE_GPS) {
+        effective_source = PLATFORM_HAL_TIME_SOURCE_SOFTWARE;
+    }
 
     if (s_ds3231_available) {
         err = platform_hal_ds3231_write_datetime(datetime);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "DS3231 time update failed: %s", esp_err_to_name(err));
-        } else {
-            ESP_LOGI(TAG,
-                     "DS3231 time updated: %04u-%02u-%02u %02u:%02u:%02u",
-                     (unsigned)datetime->year,
-                     (unsigned)datetime->month,
-                     (unsigned)datetime->day,
-                     (unsigned)datetime->hour,
-                     (unsigned)datetime->minute,
-                     (unsigned)datetime->second);
+            return err;
         }
+
+        effective_source = PLATFORM_HAL_TIME_SOURCE_DS3231;
+        ESP_LOGI(TAG,
+                 "DS3231 time updated: %04u-%02u-%02u %02u:%02u:%02u",
+                 (unsigned)datetime->year,
+                 (unsigned)datetime->month,
+                 (unsigned)datetime->day,
+                 (unsigned)datetime->hour,
+                 (unsigned)datetime->minute,
+                 (unsigned)datetime->second);
     }
 
+    platform_hal_seed_software_time(datetime, effective_source);
     return ESP_OK;
 }
 

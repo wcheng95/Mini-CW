@@ -312,16 +312,28 @@ static storage_system_config_t app_core_current_system_config(void)
     return config;
 }
 
-static bool app_core_system_config_equal(const storage_system_config_t *a,
-                                         const storage_system_config_t *b)
+static bool app_core_system_config_equal_common(const storage_system_config_t *a,
+                                                const storage_system_config_t *b)
 {
     if (a == NULL || b == NULL) {
         return false;
     }
 
     return a->volume == b->volume && a->tone_hz == b->tone_hz &&
-           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm &&
+           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm;
+}
+
+static bool app_core_system_config_equal(const storage_system_config_t *a,
+                                         const storage_system_config_t *b)
+{
+    return app_core_system_config_equal_common(a, b) &&
            strcmp(a->date, b->date) == 0 && strcmp(a->time, b->time) == 0;
+}
+
+static bool app_core_system_config_equal_ignore_datetime(const storage_system_config_t *a,
+                                                        const storage_system_config_t *b)
+{
+    return app_core_system_config_equal_common(a, b);
 }
 
 static void app_core_mark_system_config_dirty(void)
@@ -449,11 +461,20 @@ static void app_core_load_persisted_settings(void)
 
     system_config = app_core_current_system_config();
     if (storage_system_load_config(&system_config)) {
-        bool apply_datetime =
-            platform_hal_get_time_source() != PLATFORM_HAL_TIME_SOURCE_DS3231;
+        bool ds3231_time_active =
+            platform_hal_get_time_source() == PLATFORM_HAL_TIME_SOURCE_DS3231;
+        bool apply_datetime = !ds3231_time_active;
         app_core_apply_system_config(&system_config, apply_datetime);
         storage_system_config_t applied_config = app_core_current_system_config();
-        if (!app_core_system_config_equal(&system_config, &applied_config)) {
+        bool config_equal = ds3231_time_active
+                                ? app_core_system_config_equal_ignore_datetime(&system_config,
+                                                                              &applied_config)
+                                : app_core_system_config_equal(&system_config, &applied_config);
+        if (!config_equal) {
+            if (ds3231_time_active) {
+                snprintf(applied_config.date, sizeof(applied_config.date), "%s", system_config.date);
+                snprintf(applied_config.time, sizeof(applied_config.time), "%s", system_config.time);
+            }
             storage_system_save_config(&applied_config);
         }
     }

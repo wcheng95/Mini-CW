@@ -1321,13 +1321,17 @@ static bool ui_service_handle_datetime_edit_char(char key, ui_input_event_t *out
         return true;
     }
 
-    if (key == ';') {
+    if (key == ',') {
         ui_service_move_datetime_cursor(-1);
         return true;
     }
 
-    if (key == '.') {
+    if (key == '/') {
         ui_service_move_datetime_cursor(1);
+        return true;
+    }
+
+    if (key == ';' || key == '.') {
         return true;
     }
 
