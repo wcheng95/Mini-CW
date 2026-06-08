@@ -2,6 +2,7 @@
 
 * KeyIn: G13-Tip, G15-Ring - to paddle
 * KeyOut: G3-Tip, G6-Ring - to radio
+* RTC: G8-SDA, G9-SCL - DS3231 or similar
 * Debug: G4-TX, G5-RX - not required for normal use
 
 ![Adaptor](mini-cw_adaptor.jpeg)
