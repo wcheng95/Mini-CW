@@ -1059,7 +1059,12 @@ static void keyer_update_iambic_memory(bool dit_pressed,
         s_dah_memory = true;
     }
 
-    if (s_paddle_mode == KEYER_PADDLE_IAMBIC_B && !both_pressed && !dit_pressed &&
+    /*
+     * The UI labels for Iambic A/B were observed to be swapped.
+     * Keep the stored enum values and display labels stable, but apply the
+     * squeeze-release extra-element behavior to the opposite selection.
+     */
+    if (s_paddle_mode == KEYER_PADDLE_IAMBIC_A && !both_pressed && !dit_pressed &&
         !dah_pressed && s_squeeze_latched &&
         !s_mode_b_extra_pending &&
         !keyer_tick_reached(now, s_paddle_element_end_tick)) {
