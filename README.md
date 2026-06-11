@@ -5,7 +5,14 @@
 * RTC: G8-SDA, G9-SCL - Optional, DS3231 or similar
 * Debug: G4-TX, G5-RX - not required for normal use
 
-![Adaptor](mini-cw_adaptor.jpeg)
+![Adaptor-front](adapter-f.jpeg)
+![Adaptor-back](adapter-b.jpeg)
+
+Audio phonejack: https://www.amazon.com/dp/B07MFKKWG5
+
+RTC: https://www.amazon.com/dp/B01N1LZSK3
+
+While in place, the adapter doubles as a stand, put Cardputer into a better viewing angle.
 
 # Mini-CW User Manual
 
