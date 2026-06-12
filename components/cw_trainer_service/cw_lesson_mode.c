@@ -394,8 +394,8 @@ void cw_lesson_mode_backspace(void)
 
 const cw_lesson_result_t *cw_lesson_mode_submit(void)
 {
-    char target[CW_LESSON_TARGET_MAX + 1U];
-    char copy[CW_LESSON_COPY_MAX + 1U];
+    static char target[CW_LESSON_TARGET_MAX + 1U];
+    static char copy[CW_LESSON_COPY_MAX + 1U];
     uint16_t target_chars;
     uint16_t distance;
     uint16_t accuracy = 0;
