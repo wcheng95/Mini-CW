@@ -118,6 +118,18 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_SK_WPM (1ULL << 33)
 #define STORAGE_KEY_SYSTEM_DATE (1ULL << 34)
 #define STORAGE_KEY_SYSTEM_TIME (1ULL << 35)
+#define STORAGE_KEY_LESSON_BEST_ACCURACY   (1ULL << 36)
+#define STORAGE_KEY_LESSON_LAST_ACCURACY   (1ULL << 37)
+#define STORAGE_KEY_LESSON_ATTEMPTS        (1ULL << 38)
+#define STORAGE_KEY_WORD_BEST_SCORE        (1ULL << 39)
+#define STORAGE_KEY_WORD_BEST_MAX_WPM      (1ULL << 40)
+#define STORAGE_KEY_WORD_ATTEMPTS          (1ULL << 41)
+#define STORAGE_KEY_CALLS_BEST_SCORE       (1ULL << 42)
+#define STORAGE_KEY_CALLS_BEST_MAX_WPM     (1ULL << 43)
+#define STORAGE_KEY_CALLS_ATTEMPTS         (1ULL << 44)
+#define STORAGE_KEY_PLAIN_BEST_ACCURACY    (1ULL << 45)
+#define STORAGE_KEY_PLAIN_LAST_ACCURACY    (1ULL << 46)
+#define STORAGE_KEY_PLAIN_ATTEMPTS         (1ULL << 47)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -143,7 +155,15 @@ static const char *TAG = "storage_service";
       STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
       STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT | STORAGE_KEY_KEYER_MYCALL | \
       STORAGE_KEY_KEYER_SK_WPM |                                                      \
-      STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
+      STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM |           \
+      STORAGE_KEY_LESSON_BEST_ACCURACY | STORAGE_KEY_LESSON_LAST_ACCURACY |            \
+      STORAGE_KEY_LESSON_ATTEMPTS |                                                    \
+      STORAGE_KEY_WORD_BEST_SCORE | STORAGE_KEY_WORD_BEST_MAX_WPM |                    \
+      STORAGE_KEY_WORD_ATTEMPTS |                                                      \
+      STORAGE_KEY_CALLS_BEST_SCORE | STORAGE_KEY_CALLS_BEST_MAX_WPM |                  \
+      STORAGE_KEY_CALLS_ATTEMPTS |                                                     \
+      STORAGE_KEY_PLAIN_BEST_ACCURACY | STORAGE_KEY_PLAIN_LAST_ACCURACY |              \
+      STORAGE_KEY_PLAIN_ATTEMPTS)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
     (STORAGE_SECTION_SYSTEM | STORAGE_SECTION_KEYER | STORAGE_SECTION_LESSONS |      \
@@ -173,6 +193,10 @@ static cw_lesson_config_t s_lesson_config;
 static cw_word_config_t s_word_config;
 static cw_callsign_config_t s_callsign_config;
 static cw_plaintext_config_t s_plaintext_config;
+static cw_lesson_result_t s_lesson_result;
+static cw_word_result_t s_word_result;
+static cw_callsign_result_t s_callsign_result;
+static cw_plaintext_result_t s_plaintext_result;
 
 static void storage_mount_changed_cb(tinyusb_msc_event_t *event)
 {
@@ -688,6 +712,11 @@ static void storage_settings_set_defaults(void)
         .code_wpm = 20,
         .effective_wpm = 12,
     };
+
+    memset(&s_lesson_result, 0, sizeof(s_lesson_result));
+    memset(&s_word_result, 0, sizeof(s_word_result));
+    memset(&s_callsign_result, 0, sizeof(s_callsign_result));
+    memset(&s_plaintext_result, 0, sizeof(s_plaintext_result));
 }
 
 static bool storage_is_leap_year(uint16_t year)
@@ -1323,6 +1352,18 @@ static void storage_apply_setting(storage_setting_section_t section,
         } else if (storage_str_equal_ignore_case(key, "group_len")) {
             *seen_keys |= STORAGE_KEY_LESSON_GROUP_LEN;
             (void)storage_apply_lesson_group_len(value, changed);
+        } else if (storage_str_equal_ignore_case(key, "best_accuracy")) {
+            *seen_keys |= STORAGE_KEY_LESSON_BEST_ACCURACY;
+            (void)storage_apply_u8_setting(value, 0, 100, &s_lesson_result.best_accuracy, changed);
+        } else if (storage_str_equal_ignore_case(key, "last_accuracy")) {
+            *seen_keys |= STORAGE_KEY_LESSON_LAST_ACCURACY;
+            (void)storage_apply_u8_setting(value, 0, 100, &s_lesson_result.last_accuracy, changed);
+        } else if (storage_str_equal_ignore_case(key, "attempts")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_LESSON_ATTEMPTS;
+            if (storage_parse_u32(value, &parsed)) {
+                s_lesson_result.attempts = parsed;
+            }
         }
         break;
 
@@ -1369,6 +1410,21 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_DELAY_S_MAX,
                                            &s_word_config.delay_s,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "best_score")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_WORD_BEST_SCORE;
+            if (storage_parse_u32(value, &parsed)) {
+                s_word_result.best_score = parsed;
+            }
+        } else if (storage_str_equal_ignore_case(key, "best_max_wpm")) {
+            *seen_keys |= STORAGE_KEY_WORD_BEST_MAX_WPM;
+            (void)storage_apply_u8_setting(value, 0, 99, &s_word_result.best_max_wpm, changed);
+        } else if (storage_str_equal_ignore_case(key, "attempts")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_WORD_ATTEMPTS;
+            if (storage_parse_u32(value, &parsed)) {
+                s_word_result.attempts = parsed;
+            }
         }
         break;
 
@@ -1401,6 +1457,21 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_DELAY_S_MAX,
                                            &s_callsign_config.delay_s,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "best_score")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_CALLS_BEST_SCORE;
+            if (storage_parse_u32(value, &parsed)) {
+                s_callsign_result.best_score = parsed;
+            }
+        } else if (storage_str_equal_ignore_case(key, "best_max_wpm")) {
+            *seen_keys |= STORAGE_KEY_CALLS_BEST_MAX_WPM;
+            (void)storage_apply_u8_setting(value, 0, 99, &s_callsign_result.best_max_wpm, changed);
+        } else if (storage_str_equal_ignore_case(key, "attempts")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_CALLS_ATTEMPTS;
+            if (storage_parse_u32(value, &parsed)) {
+                s_callsign_result.attempts = parsed;
+            }
         }
         break;
 
@@ -1419,6 +1490,18 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_PLAINTEXT_WPM_MAX,
                                            &s_plaintext_config.effective_wpm,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "best_accuracy_tenths")) {
+            *seen_keys |= STORAGE_KEY_PLAIN_BEST_ACCURACY;
+            (void)storage_apply_u16_setting(value, &s_plaintext_result.best_accuracy_tenths, changed);
+        } else if (storage_str_equal_ignore_case(key, "last_accuracy_tenths")) {
+            *seen_keys |= STORAGE_KEY_PLAIN_LAST_ACCURACY;
+            (void)storage_apply_u16_setting(value, &s_plaintext_result.last_accuracy_tenths, changed);
+        } else if (storage_str_equal_ignore_case(key, "attempts")) {
+            uint32_t parsed = 0;
+            *seen_keys |= STORAGE_KEY_PLAIN_ATTEMPTS;
+            if (storage_parse_u32(value, &parsed)) {
+                s_plaintext_result.attempts = parsed;
+            }
         }
         break;
 
@@ -1504,6 +1587,9 @@ static bool storage_write_settings_file(void)
                            "code_wpm=%u\n"
                            "effective_wpm=%u\n"
                            "group_len=%u\n"
+                           "best_accuracy=%u\n"
+                           "last_accuracy=%u\n"
+                           "attempts=%lu\n"
                            "\n"
                            "[words]\n"
                            "speed=%u\n"
@@ -1512,16 +1598,25 @@ static bool storage_write_settings_file(void)
                            "max_len=%u\n"
                            "max_wpm=%u\n"
                            "delay_s=%u\n"
+                           "best_score=%lu\n"
+                           "best_max_wpm=%u\n"
+                           "attempts=%lu\n"
                            "\n"
                            "[calls]\n"
                            "speed=%u\n"
                            "min_char_wpm=%u\n"
                            "max_wpm=%u\n"
                            "delay_s=%u\n"
+                           "best_score=%lu\n"
+                           "best_max_wpm=%u\n"
+                           "attempts=%lu\n"
                            "\n"
                            "[plain]\n"
                            "code_wpm=%u\n"
-                           "effective_wpm=%u\n",
+                           "effective_wpm=%u\n"
+                           "best_accuracy_tenths=%u\n"
+                           "last_accuracy_tenths=%u\n"
+                           "attempts=%lu\n",
                            (unsigned)s_system_config.volume,
                            (unsigned)s_system_config.tone_hz,
                            storage_key_in_mode_label(s_system_config.key_in_mode),
@@ -1545,18 +1640,30 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_lesson_config.code_wpm,
                            (unsigned)s_lesson_config.effective_wpm,
                            (unsigned)s_lesson_config.group_len,
+                           (unsigned)s_lesson_result.best_accuracy,
+                           (unsigned)s_lesson_result.last_accuracy,
+                           (unsigned long)s_lesson_result.attempts,
                            (unsigned)s_word_config.start_wpm,
                            (unsigned)s_word_config.min_char_wpm,
                            (unsigned)s_word_config.lesson,
                            (unsigned)s_word_config.max_word_len,
                            (unsigned)s_word_config.max_wpm,
                            (unsigned)s_word_config.delay_s,
+                           (unsigned long)s_word_result.best_score,
+                           (unsigned)s_word_result.best_max_wpm,
+                           (unsigned long)s_word_result.attempts,
                            (unsigned)s_callsign_config.start_wpm,
                            (unsigned)s_callsign_config.min_char_wpm,
                            (unsigned)s_callsign_config.max_wpm,
                            (unsigned)s_callsign_config.delay_s,
+                           (unsigned long)s_callsign_result.best_score,
+                           (unsigned)s_callsign_result.best_max_wpm,
+                           (unsigned long)s_callsign_result.attempts,
                            (unsigned)s_plaintext_config.code_wpm,
-                           (unsigned)s_plaintext_config.effective_wpm);
+                           (unsigned)s_plaintext_config.effective_wpm,
+                           (unsigned)s_plaintext_result.best_accuracy_tenths,
+                           (unsigned)s_plaintext_result.last_accuracy_tenths,
+                           (unsigned long)s_plaintext_result.attempts);
     if (write_result < 0 || ferror(file) != 0) {
         ESP_LOGE(TAG, "write %s failed", STORAGE_SETTINGS_TMP_PATH);
         (void)fclose(file);
@@ -1971,7 +2078,7 @@ bool storage_lesson_load(cw_lesson_config_t *config, cw_lesson_result_t *result)
 
     *config = s_lesson_config;
     if (result != NULL) {
-        memset(result, 0, sizeof(*result));
+        *result = s_lesson_result;
     }
 
     return true;
@@ -1999,14 +2106,18 @@ bool storage_lesson_save_config(const cw_lesson_config_t *config)
 
 bool storage_lesson_save_result(const cw_lesson_result_t *result)
 {
-    (void)result;
-
     if (!storage_firmware_can_access_fatfs("lesson result save")) {
         return false;
     }
 
-    ESP_LOGI(TAG, "lesson result save skipped: persistence disabled");
-    return false;
+    if (result == NULL) {
+        return false;
+    }
+
+    s_lesson_result.best_accuracy = result->best_accuracy;
+    s_lesson_result.last_accuracy = result->last_accuracy;
+    s_lesson_result.attempts = result->attempts;
+    return storage_write_settings_file();
 }
 
 bool storage_word_load(cw_word_config_t *config, cw_word_result_t *result)
@@ -2021,7 +2132,7 @@ bool storage_word_load(cw_word_config_t *config, cw_word_result_t *result)
 
     *config = s_word_config;
     if (result != NULL) {
-        memset(result, 0, sizeof(*result));
+        *result = s_word_result;
     }
 
     return true;
@@ -2049,14 +2160,18 @@ bool storage_word_save_config(const cw_word_config_t *config)
 
 bool storage_word_save_result(const cw_word_result_t *result)
 {
-    (void)result;
-
     if (!storage_firmware_can_access_fatfs("word result save")) {
         return false;
     }
 
-    ESP_LOGI(TAG, "word result save skipped: persistence disabled");
-    return false;
+    if (result == NULL) {
+        return false;
+    }
+
+    s_word_result.best_score = result->best_score;
+    s_word_result.best_max_wpm = result->best_max_wpm;
+    s_word_result.attempts = result->attempts;
+    return storage_write_settings_file();
 }
 
 bool storage_callsign_load(cw_callsign_config_t *config, cw_callsign_result_t *result)
@@ -2071,7 +2186,7 @@ bool storage_callsign_load(cw_callsign_config_t *config, cw_callsign_result_t *r
 
     *config = s_callsign_config;
     if (result != NULL) {
-        memset(result, 0, sizeof(*result));
+        *result = s_callsign_result;
     }
 
     return true;
@@ -2099,14 +2214,18 @@ bool storage_callsign_save_config(const cw_callsign_config_t *config)
 
 bool storage_callsign_save_result(const cw_callsign_result_t *result)
 {
-    (void)result;
-
     if (!storage_firmware_can_access_fatfs("callsign result save")) {
         return false;
     }
 
-    ESP_LOGI(TAG, "callsign result save skipped: persistence disabled");
-    return false;
+    if (result == NULL) {
+        return false;
+    }
+
+    s_callsign_result.best_score = result->best_score;
+    s_callsign_result.best_max_wpm = result->best_max_wpm;
+    s_callsign_result.attempts = result->attempts;
+    return storage_write_settings_file();
 }
 
 bool storage_plaintext_load(cw_plaintext_config_t *config, cw_plaintext_result_t *result)
@@ -2121,7 +2240,7 @@ bool storage_plaintext_load(cw_plaintext_config_t *config, cw_plaintext_result_t
 
     *config = s_plaintext_config;
     if (result != NULL) {
-        memset(result, 0, sizeof(*result));
+        *result = s_plaintext_result;
     }
 
     return true;
@@ -2149,14 +2268,18 @@ bool storage_plaintext_save_config(const cw_plaintext_config_t *config)
 
 bool storage_plaintext_save_result(const cw_plaintext_result_t *result)
 {
-    (void)result;
-
     if (!storage_firmware_can_access_fatfs("plaintext result save")) {
         return false;
     }
 
-    ESP_LOGI(TAG, "plaintext result save skipped: persistence disabled");
-    return false;
+    if (result == NULL) {
+        return false;
+    }
+
+    s_plaintext_result.best_accuracy_tenths = result->best_accuracy_tenths;
+    s_plaintext_result.last_accuracy_tenths = result->last_accuracy_tenths;
+    s_plaintext_result.attempts = result->attempts;
+    return storage_write_settings_file();
 }
 
 bool storage_fatfs_is_mounted(void)
