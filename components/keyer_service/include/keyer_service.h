@@ -48,6 +48,9 @@ typedef enum {
     KEYER_PADDLE_BUG,
 } keyer_paddle_mode_t;
 
+#define KEYER_CHAR_GAP_MIN 2U
+#define KEYER_CHAR_GAP_MAX 6U
+
 typedef struct {
     keyer_key_out_mode_t key_out_mode;
     keyer_paddle_mode_t paddle_mode;
@@ -55,6 +58,7 @@ typedef struct {
     uint8_t tx_delay_s;
     uint8_t tune_timeout_s;
     uint8_t repeat_interval_s;
+    uint8_t char_gap_mult;
     char mycall[KEYER_MYCALL_MAX_LEN + 1U];
     char message[KEYER_MESSAGE_COUNT][KEYER_MESSAGE_MAX_LEN + 1U];
 } keyer_config_t;
@@ -98,6 +102,8 @@ uint8_t keyer_service_get_tune_timeout_s(void);
 void keyer_service_set_tune_timeout_s(uint8_t timeout_s);
 uint8_t keyer_service_get_repeat_interval_s(void);
 void keyer_service_set_repeat_interval_s(uint8_t interval_s);
+uint8_t keyer_service_get_char_gap_mult(void);
+void keyer_service_set_char_gap_mult(uint8_t mult);
 const char *keyer_service_get_message(uint8_t index);
 void keyer_service_set_message(uint8_t index, const char *message);
 const char *keyer_service_get_mycall(void);

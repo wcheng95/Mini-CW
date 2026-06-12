@@ -66,6 +66,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_REPEAT_MAX 99U
 #define STORAGE_KEYER_SK_WPM_MIN 5U
 #define STORAGE_KEYER_SK_WPM_MAX 60U
+#define STORAGE_KEYER_CHAR_GAP_MIN 2U
+#define STORAGE_KEYER_CHAR_GAP_MAX 6U
 #define STORAGE_KEYER_DEFAULT_M1 "CQ POTA"
 #define STORAGE_KEYER_DEFAULT_M2 ""
 #define STORAGE_KEYER_DEFAULT_M3 ""
@@ -117,6 +119,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_MYCALL (1ULL << 32)
 #define STORAGE_KEY_KEYER_SK_WPM (1ULL << 33)
 #define STORAGE_KEY_SYSTEM_DATE (1ULL << 34)
+#define STORAGE_KEY_KEYER_CHAR_GAP (1ULL << 48)
 #define STORAGE_KEY_SYSTEM_TIME (1ULL << 35)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
@@ -142,7 +145,7 @@ static const char *TAG = "storage_service";
       STORAGE_KEY_KEYER_TX_DELAY | STORAGE_KEY_KEYER_REPEAT | STORAGE_KEY_KEYER_M1 |  \
       STORAGE_KEY_KEYER_M2 | STORAGE_KEY_KEYER_M3 | STORAGE_KEY_KEYER_M4 |            \
       STORAGE_KEY_KEYER_M5 | STORAGE_KEY_KEYER_TUNE_TIMEOUT | STORAGE_KEY_KEYER_MYCALL | \
-      STORAGE_KEY_KEYER_SK_WPM |                                                      \
+      STORAGE_KEY_KEYER_SK_WPM | STORAGE_KEY_KEYER_CHAR_GAP |                         \
       STORAGE_KEY_PLAINTEXT_CODE_WPM | STORAGE_KEY_PLAINTEXT_EFFECTIVE_WPM)
 
 #define STORAGE_EXPECTED_SECTIONS                                                    \
@@ -650,6 +653,7 @@ static void storage_settings_set_defaults(void)
         .tx_delay_s = 0,
         .tune_timeout_s = 10,
         .repeat_interval_s = 6,
+        .char_gap_mult = 3,
         .mycall = STORAGE_KEYER_DEFAULT_MYCALL,
         .message = {
             STORAGE_KEYER_DEFAULT_M1,
@@ -897,6 +901,10 @@ static void storage_normalize_keyer_config(bool *changed)
         storage_clamp_u8(s_keyer_config.tune_timeout_s,
                          STORAGE_KEYER_TUNE_TIMEOUT_MIN,
                          STORAGE_KEYER_TUNE_TIMEOUT_MAX);
+    s_keyer_config.char_gap_mult =
+        storage_clamp_u8(s_keyer_config.char_gap_mult,
+                         STORAGE_KEYER_CHAR_GAP_MIN,
+                         STORAGE_KEYER_CHAR_GAP_MAX);
 
     for (uint8_t i = 0U; i < KEYER_MESSAGE_COUNT; ++i) {
         s_keyer_config.message[i][KEYER_MESSAGE_MAX_LEN] = '\0';
@@ -1270,6 +1278,13 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_KEYER_TUNE_TIMEOUT_MAX,
                                            &s_keyer_config.tune_timeout_s,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "char_gap")) {
+            *seen_keys |= STORAGE_KEY_KEYER_CHAR_GAP;
+            (void)storage_apply_u8_setting(value,
+                                           STORAGE_KEYER_CHAR_GAP_MIN,
+                                           STORAGE_KEYER_CHAR_GAP_MAX,
+                                           &s_keyer_config.char_gap_mult,
+                                           changed);
         } else if (storage_str_equal_ignore_case(key, "mycall")) {
             *seen_keys |= STORAGE_KEY_KEYER_MYCALL;
             storage_copy_keyer_mycall(s_keyer_config.mycall, value);
@@ -1491,6 +1506,7 @@ static bool storage_write_settings_file(void)
                            "tx_delay_s=%u\n"
                            "tune_timeout_s=%u\n"
                            "repeat_interval_s=%u\n"
+                           "char_gap=%u\n"
                            "mycall=%s\n"
                            "m1=%s\n"
                            "m2=%s\n"
@@ -1534,6 +1550,7 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_keyer_config.tx_delay_s,
                            (unsigned)s_keyer_config.tune_timeout_s,
                            (unsigned)s_keyer_config.repeat_interval_s,
+                           (unsigned)s_keyer_config.char_gap_mult,
                            s_keyer_config.mycall,
                            s_keyer_config.message[0],
                            s_keyer_config.message[1],

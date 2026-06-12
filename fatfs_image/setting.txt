@@ -17,6 +17,7 @@ sk_wpm=15
 tx_delay_s=0
 tune_timeout_s=10
 repeat_interval_s=6
+char_gap=3
 mycall=AG6AQ
 m1=CQ POTA
 m2=

@@ -987,6 +987,9 @@ static void app_core_handle_keyer_config_changed(const ui_input_event_t *event)
     case UI_SETTING_KEYER_SK_WPM:
         config.sk_wpm = (uint8_t)event->value;
         break;
+    case UI_SETTING_KEYER_CHAR_GAP:
+        config.char_gap_mult = (uint8_t)event->value;
+        break;
     case UI_SETTING_KEYER_MYCALL:
         snprintf(config.mycall,
                  sizeof(config.mycall),
