@@ -296,16 +296,21 @@ files are not overwritten.
 Mini-CW uses the shared Mini 8 MB partition layout: one factory app partition
 from `0x10000` to `0x500000`, and a 3 MB FATFS partition from `0x500000` to
 `0x800000`. FATFS uses 512-byte FATFS/WL sectors for USB MSC compatibility.
-FATFS survives normal app reflashes that use this same table, but not
-`erase_flash`, full-chip erase, or another partition layout change. Moving from
-the older `0x400000` FATFS layout may cause a one-time FATFS reformat on first
-boot.
+Mini-CW and Mini-FT8 both locate this partition by the `fatfs` label, so their
+files can coexist. Current M5Launcher installs and switches between the two
+applications without replacing an existing compatible FATFS partition.
 
-The build generates `build/fatfs.bin` from `fatfs_image/` and
-`build/MiniCW_V1_1_Merged_Auto.bin` for factory/release flashing. Normal
-`idf.py flash` does not write `fatfs.bin`, so existing FATFS files survive. The
-merged release binary includes the seed FATFS image and overwrites
-`setting.txt` and `qsocalls.csv`.
+The build generates `build/MiniCW_V1_1_Merged_Auto.bin` from the bootloader,
+partition table, and application only. It contains no FATFS payload, so normal
+flashing and M5Launcher reinstall do not overwrite stored files or show a
+`Copying Data` step. Optional examples for manual USB Drive copying are under
+`examples/fatfs/`.
+
+On a fresh or invalid volume, Mini-CW formats FATFS automatically, creates a
+default `setting.txt`, and creates a header-only `qsocalls.csv`. `erase_flash`,
+a full-chip erase, or an incompatible partition-table change still destroys
+stored files. Moving from the older `0x400000` FATFS layout may cause a one-time
+format on first boot.
 
 The release package can contain `MiniCW_V1_1.bin` and `flash_mini_cw.ps1` in the
 same directory. The flash script defaults to COM11 and loads `MiniCW_V1_1.bin`
