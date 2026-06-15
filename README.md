@@ -1,3 +1,5 @@
+Subscribe to [https://freelists.org/list/qrp-portable](https://freelists.org/list/qrp-portable) for announcements, discussions, and updates about my Mini-series apps for the Cardputer ADV.
+
 # Make an Adapter
 
 * KeyIn: G13-Tip, G15-Ring - to paddle
