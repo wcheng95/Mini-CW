@@ -144,6 +144,7 @@ static keyer_config_t s_config = {
     .tx_delay_s = 0U,
     .tune_timeout_s = 10U,
     .repeat_interval_s = 6U,
+    .char_gap_mult = 3U,
     .mycall = "AG6AQ",
     .message = {
         "CQ POTA",
@@ -1018,7 +1019,8 @@ static void keyer_update_decode_gaps(TickType_t now, uint16_t unit_ms)
     }
 
     if (keyer_decoder_has_pending(&s_paddle_decoder)) {
-        char_due = s_decoder_last_element_end_tick + keyer_ms_to_delay_ticks(3U * unit_ms);
+        char_due = s_decoder_last_element_end_tick +
+                   keyer_ms_to_delay_ticks((uint32_t)s_config.char_gap_mult * unit_ms);
         if (!keyer_tick_reached(now, char_due)) {
             return;
         }
@@ -1704,6 +1706,18 @@ void keyer_service_set_repeat_interval_s(uint8_t interval_s)
     s_config.repeat_interval_s =
         keyer_clamp_u8(interval_s, KEYER_REPEAT_MIN_S, KEYER_REPEAT_MAX_S);
     ESP_LOGI(TAG, "repeat interval: %u s", (unsigned)s_config.repeat_interval_s);
+}
+
+uint8_t keyer_service_get_char_gap_mult(void)
+{
+    return s_config.char_gap_mult;
+}
+
+void keyer_service_set_char_gap_mult(uint8_t mult)
+{
+    s_config.char_gap_mult =
+        keyer_clamp_u8(mult, KEYER_CHAR_GAP_MIN, KEYER_CHAR_GAP_MAX);
+    ESP_LOGI(TAG, "char gap mult: %u", (unsigned)s_config.char_gap_mult);
 }
 
 const char *keyer_service_get_message(uint8_t index)

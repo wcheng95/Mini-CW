@@ -66,6 +66,7 @@ typedef enum {
     UI_EDIT_KEYER_TUNE_TIMEOUT_S,
     UI_EDIT_KEYER_REPEAT_INTERVAL_S,
     UI_EDIT_KEYER_SK_WPM,
+    UI_EDIT_KEYER_CHAR_GAP,
 } ui_edit_target_t;
 
 typedef enum {
@@ -561,6 +562,8 @@ static int ui_service_edit_min(ui_edit_target_t target)
         return UI_KEYER_TUNE_TIMEOUT_S_MIN;
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
         return UI_KEYER_REPEAT_S_MIN;
+    case UI_EDIT_KEYER_CHAR_GAP:
+        return KEYER_CHAR_GAP_MIN;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -611,6 +614,8 @@ static int ui_service_edit_max(ui_edit_target_t target)
         return UI_KEYER_DELAY_S_MAX;
     case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
         return UI_KEYER_TUNE_TIMEOUT_S_MAX;
+    case UI_EDIT_KEYER_CHAR_GAP:
+        return KEYER_CHAR_GAP_MAX;
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -647,6 +652,7 @@ static int ui_service_edit_step(ui_edit_target_t target)
     case UI_EDIT_KEYER_TX_DELAY_S:
     case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
+    case UI_EDIT_KEYER_CHAR_GAP:
         return 1;
     case UI_EDIT_NONE:
     default:
@@ -719,6 +725,8 @@ static int ui_service_get_edit_value(ui_edit_target_t target)
         return keyer_service_get_repeat_interval_s();
     case UI_EDIT_KEYER_SK_WPM:
         return keyer_service_get_sk_wpm();
+    case UI_EDIT_KEYER_CHAR_GAP:
+        return keyer_service_get_char_gap_mult();
     case UI_EDIT_NONE:
     default:
         return 0;
@@ -759,6 +767,7 @@ static ui_input_event_type_t ui_service_edit_event_type(ui_edit_target_t target)
     case UI_EDIT_KEYER_TUNE_TIMEOUT_S:
     case UI_EDIT_KEYER_REPEAT_INTERVAL_S:
     case UI_EDIT_KEYER_SK_WPM:
+    case UI_EDIT_KEYER_CHAR_GAP:
         return UI_INPUT_EVENT_KEYER_CONFIG_CHANGED;
     case UI_EDIT_NONE:
     default:
@@ -817,6 +826,8 @@ static ui_setting_target_t ui_service_edit_setting_target(ui_edit_target_t targe
         return UI_SETTING_KEYER_REPEAT_INTERVAL_S;
     case UI_EDIT_KEYER_SK_WPM:
         return UI_SETTING_KEYER_SK_WPM;
+    case UI_EDIT_KEYER_CHAR_GAP:
+        return UI_SETTING_KEYER_CHAR_GAP;
     case UI_EDIT_NONE:
     default:
         return UI_SETTING_NONE;
@@ -2102,7 +2113,12 @@ static void ui_service_render_keyer_menu(void)
                                      "5 SK Wpm:",
                                      keyer_service_get_sk_wpm(),
                                      "");
-        ui_service_set_text(screen.line[5], sizeof(screen.line[5]), "");
+        ui_service_format_value_line(screen.line[5],
+                                     sizeof(screen.line[5]),
+                                     6U,
+                                     "6 CharGap:",
+                                     keyer_service_get_char_gap_mult(),
+                                     "");
     }
 
     ui_screen_render(&screen);
@@ -2483,6 +2499,8 @@ static bool ui_service_menu_item_edit_target(uint8_t item, ui_edit_target_t *out
                 target = UI_EDIT_KEYER_TUNE_TIMEOUT_S;
             } else if (item == 5U) {
                 target = UI_EDIT_KEYER_SK_WPM;
+            } else if (item == 6U) {
+                target = UI_EDIT_KEYER_CHAR_GAP;
             }
         }
     } else if (s_ui.mode == UI_SERVICE_MODE_SYSTEM && s_ui.menu_page == 0U) {
@@ -2708,6 +2726,26 @@ static bool ui_service_handle_menu_char(char key, bool fn, ui_input_event_t *out
 
     if (key >= '1' && key <= '6') {
         return ui_service_handle_menu_number((uint8_t)(key - '0'), key, out_event);
+    }
+
+    if (s_ui.mode == UI_SERVICE_MODE_KEYER && (key == '7' || key == '9')) {
+        int delta = (key == '9') ? 1 : -1;
+        int cur = (int)keyer_service_get_char_gap_mult();
+        int next = cur + delta;
+        if (next < (int)KEYER_CHAR_GAP_MIN) {
+            next = (int)KEYER_CHAR_GAP_MIN;
+        } else if (next > (int)KEYER_CHAR_GAP_MAX) {
+            next = (int)KEYER_CHAR_GAP_MAX;
+        }
+        if (next != cur) {
+            ui_service_set_event(out_event, UI_INPUT_EVENT_KEYER_CONFIG_CHANGED, key);
+            if (out_event != NULL) {
+                out_event->setting = UI_SETTING_KEYER_CHAR_GAP;
+                out_event->value = next;
+                out_event->delta = delta;
+            }
+        }
+        return true;
     }
 
     if (key == ';') {
