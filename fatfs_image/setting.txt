@@ -4,14 +4,14 @@
 [system]
 volume=80
 tone_hz=700
-key_in=SK-T
+key_in=Pdl
 key_in_wpm=20
 date=2026-01-01
 time=00:00:00
 usb_drive=off
 
 [keyer]
-key_out=SK
+key_out=Off
 paddle=IambicA
 sk_wpm=15
 tx_delay_s=0
@@ -30,6 +30,9 @@ duration_min=1
 code_wpm=20
 effective_wpm=12
 group_len=0
+best_accuracy=0
+last_accuracy=0
+attempts=0
 
 [words]
 speed=20
@@ -38,13 +41,22 @@ lesson=40
 max_len=15
 max_wpm=30
 delay_s=1
+best_score=0
+best_max_wpm=0
+attempts=0
 
 [calls]
 speed=20
 min_char_wpm=10
 max_wpm=30
 delay_s=1
+best_score=0
+best_max_wpm=0
+attempts=0
 
 [plain]
 code_wpm=20
 effective_wpm=12
+best_accuracy_tenths=0
+last_accuracy_tenths=0
+attempts=0
