@@ -37,7 +37,6 @@ static const char *TAG = "app_core";
 #define APP_KEYER_LOG_MINUTE_LEN 12U
 #define APP_KEYER_LOG_TIMESTAMP_LEN 15U
 #define APP_KEYER_LOG_LINE_MAX (APP_KEYER_LOG_TEXT_MAX + 40U)
-#define APP_KEYER_LOG_FLUSH_IDLE_MS 3000U
 
 static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
 {
@@ -83,12 +82,10 @@ typedef struct {
 
     bool log_active;
     bool log_truncated;
-    bool log_flush_retry_pending;
     char log_minute[APP_KEYER_LOG_MINUTE_LEN + 1U];
     char log_timestamp[APP_KEYER_LOG_TIMESTAMP_LEN + 1U];
     char log_text[APP_KEYER_LOG_TEXT_MAX + 1U];
     size_t log_text_len;
-    TickType_t log_flush_due;
 } app_keyer_state_t;
 
 static app_keyer_state_t s_keyer;
@@ -331,12 +328,10 @@ static void app_core_keyer_log_reset(void)
 {
     s_keyer.log_active = false;
     s_keyer.log_truncated = false;
-    s_keyer.log_flush_retry_pending = false;
     s_keyer.log_minute[0] = '\0';
     s_keyer.log_timestamp[0] = '\0';
     s_keyer.log_text[0] = '\0';
     s_keyer.log_text_len = 0U;
-    s_keyer.log_flush_due = 0;
 }
 
 static bool app_core_keyer_log_format_time(char *timestamp,
@@ -383,16 +378,6 @@ static bool app_core_keyer_log_format_time(char *timestamp,
            minute_len > 0 && (size_t)minute_len < minute_size;
 }
 
-static void app_core_keyer_log_schedule_flush(void)
-{
-    if (!s_keyer.log_active) {
-        return;
-    }
-
-    s_keyer.log_flush_due =
-        xTaskGetTickCount() + app_core_ms_to_delay_ticks(APP_KEYER_LOG_FLUSH_IDLE_MS);
-}
-
 static bool app_core_keyer_log_format_line(char *line, size_t line_size)
 {
     const char *trunc_suffix = s_keyer.log_truncated ? " [TRUNC]" : "";
@@ -419,6 +404,7 @@ static bool app_core_keyer_log_format_line(char *line, size_t line_size)
 static bool app_core_keyer_log_flush(void)
 {
     char line[APP_KEYER_LOG_LINE_MAX];
+    bool ok = true;
 
     if (!s_keyer.log_active) {
         return true;
@@ -426,21 +412,16 @@ static bool app_core_keyer_log_flush(void)
 
     if (s_keyer.log_text_len > 0U) {
         if (!app_core_keyer_log_format_line(line, sizeof(line))) {
-            s_keyer.log_flush_retry_pending = true;
-            app_core_keyer_log_schedule_flush();
-            return false;
-        }
-
-        if (!storage_session_log_append(line)) {
-            ESP_LOGW(TAG, "keyer log append failed; retry scheduled");
-            s_keyer.log_flush_retry_pending = true;
-            app_core_keyer_log_schedule_flush();
-            return false;
+            ESP_LOGW(TAG, "keyer log line dropped after format failure");
+            ok = false;
+        } else if (!storage_session_log_append(line)) {
+            ESP_LOGW(TAG, "keyer log append failed; line dropped");
+            ok = false;
         }
     }
 
     app_core_keyer_log_reset();
-    return true;
+    return ok;
 }
 
 static bool app_core_keyer_log_flush_if_minute_changed(void)
@@ -457,12 +438,7 @@ static bool app_core_keyer_log_flush_if_minute_changed(void)
     }
 
     if (strcmp(minute, s_keyer.log_minute) != 0) {
-        if (s_keyer.log_flush_retry_pending && s_keyer.log_flush_due != 0 &&
-            !app_core_tick_reached(xTaskGetTickCount(), s_keyer.log_flush_due)) {
-            return false;
-        }
-
-        return app_core_keyer_log_flush();
+        (void)app_core_keyer_log_flush();
     }
 
     return true;
@@ -479,7 +455,6 @@ static bool app_core_keyer_log_begin(void)
 
     s_keyer.log_active = true;
     s_keyer.log_truncated = false;
-    s_keyer.log_flush_retry_pending = false;
     s_keyer.log_text[0] = '\0';
     s_keyer.log_text_len = 0U;
     return true;
@@ -525,14 +500,12 @@ static void app_core_keyer_log_append_char(char ch)
         if (!s_keyer.log_truncated) {
             s_keyer.log_truncated = true;
             ESP_LOGW(TAG, "keyer log minute text truncated");
-            app_core_keyer_log_schedule_flush();
         }
         return;
     }
 
     s_keyer.log_text[s_keyer.log_text_len++] = log_ch;
     s_keyer.log_text[s_keyer.log_text_len] = '\0';
-    app_core_keyer_log_schedule_flush();
 }
 
 static void app_core_keyer_log_append_text(const char *text)
@@ -572,26 +545,6 @@ static void app_core_keyer_log_backspace(void)
     s_keyer.log_text[s_keyer.log_text_len] = '\0';
     if (s_keyer.log_text_len == 0U) {
         app_core_keyer_log_reset();
-    } else {
-        app_core_keyer_log_schedule_flush();
-    }
-}
-
-static void app_core_keyer_log_update(void)
-{
-    TickType_t now;
-
-    if (!s_keyer.log_active) {
-        return;
-    }
-
-    if (!app_core_keyer_log_flush_if_minute_changed() || !s_keyer.log_active) {
-        return;
-    }
-
-    now = xTaskGetTickCount();
-    if (s_keyer.log_flush_due != 0 && app_core_tick_reached(now, s_keyer.log_flush_due)) {
-        (void)app_core_keyer_log_flush();
     }
 }
 
@@ -879,7 +832,6 @@ static void app_core_keyer_cancel_repeat(void)
 
 static void app_core_keyer_clear_tx_fifo(void)
 {
-    (void)app_core_keyer_log_flush();
     s_keyer.tx_pending = false;
     s_keyer.last_append_was_message = false;
     app_core_keyer_cancel_repeat();
@@ -1105,8 +1057,6 @@ static void app_core_keyer_set_tune_latched(bool latched)
 
 static void app_core_keyer_update(void)
 {
-    app_core_keyer_log_update();
-
     if (keyer_service_take_sk_wpm_save_request()) {
         app_core_mark_keyer_config_dirty();
         ui_service_refresh();
@@ -1351,7 +1301,9 @@ static void app_core_handle_usb_drive_changed(const ui_input_event_t *event)
     }
 
     if (enabled) {
-        app_core_keyer_log_flush();
+        if (!app_core_keyer_log_flush()) {
+            ESP_LOGW(TAG, "keyer log flush failed before USB Drive");
+        }
     }
 
     /* Storage owns FATFS and USB MSC; app_core only routes the UI request. */
@@ -1790,7 +1742,6 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         }
         app_core_sync_mode_from_ui();
         if (was_keyer && s_app.mode != APP_MODE_KEYER) {
-            (void)app_core_keyer_log_flush();
             keyer_service_clear_op_name();
         }
         ui_service_refresh();
