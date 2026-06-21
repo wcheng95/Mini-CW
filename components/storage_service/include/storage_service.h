@@ -29,6 +29,7 @@ typedef struct {
     uint16_t tone_hz;
     keyer_key_in_mode_t key_in_mode;
     uint8_t key_in_wpm;
+    int gps_baud;
     char date[STORAGE_SYSTEM_DATE_LEN + 1U];
     char time[STORAGE_SYSTEM_TIME_LEN + 1U];
 } storage_system_config_t;

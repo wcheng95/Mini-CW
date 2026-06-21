@@ -16,6 +16,7 @@
 
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,8 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEYER_DEFAULT_MYCALL "AG6AQ"
 #define STORAGE_SYSTEM_DEFAULT_DATE "2026-01-01"
 #define STORAGE_SYSTEM_DEFAULT_TIME "00:00:00"
+#define STORAGE_GPS_BAUD_DEFAULT 115200
+#define STORAGE_GPS_BAUD_SLOW 9600
 
 #define STORAGE_KEY_SYSTEM_VOLUME (1UL << 0)
 #define STORAGE_KEY_SYSTEM_KEY_IN (1UL << 1)
@@ -119,6 +122,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_KEY_KEYER_SK_WPM (1ULL << 33)
 #define STORAGE_KEY_SYSTEM_DATE (1ULL << 34)
 #define STORAGE_KEY_SYSTEM_TIME (1ULL << 35)
+#define STORAGE_KEY_SYSTEM_GPS_BAUD (1ULL << 36)
 
 #define STORAGE_SECTION_SYSTEM (1UL << 0)
 #define STORAGE_SECTION_KEYER (1UL << 1)
@@ -130,8 +134,9 @@ static const char *TAG = "storage_service";
 #define STORAGE_EXPECTED_KEYS                                                        \
     (STORAGE_KEY_SYSTEM_VOLUME | STORAGE_KEY_SYSTEM_KEY_IN |                         \
      STORAGE_KEY_SYSTEM_TONE_HZ | STORAGE_KEY_SYSTEM_KEY_IN_WPM |                    \
-     STORAGE_KEY_SYSTEM_USB_DRIVE | STORAGE_KEY_SYSTEM_DATE | STORAGE_KEY_SYSTEM_TIME | \
-     STORAGE_KEY_LESSON_LESSON | STORAGE_KEY_LESSON_DURATION |                      \
+     STORAGE_KEY_SYSTEM_USB_DRIVE | STORAGE_KEY_SYSTEM_DATE |                        \
+     STORAGE_KEY_SYSTEM_TIME | STORAGE_KEY_SYSTEM_GPS_BAUD |                         \
+     STORAGE_KEY_LESSON_LESSON | STORAGE_KEY_LESSON_DURATION |                       \
      STORAGE_KEY_LESSON_CODE_WPM | STORAGE_KEY_LESSON_EFFECTIVE_WPM |               \
      STORAGE_KEY_LESSON_GROUP_LEN | STORAGE_KEY_WORD_SPEED |                        \
      STORAGE_KEY_WORD_MIN_CHAR_WPM | STORAGE_KEY_WORD_LESSON |                      \
@@ -640,6 +645,7 @@ static void storage_settings_set_defaults(void)
         .tone_hz = 700,
         .key_in_mode = KEYER_KEY_IN_PADDLE,
         .key_in_wpm = 19,
+        .gps_baud = STORAGE_GPS_BAUD_DEFAULT,
         .date = STORAGE_SYSTEM_DEFAULT_DATE,
         .time = STORAGE_SYSTEM_DEFAULT_TIME,
     };
@@ -798,8 +804,8 @@ static bool storage_time_string_valid(const char *time)
 }
 
 static bool storage_apply_datetime_string(const char *value,
-                                          char *target,
-                                          size_t target_size,
+                                           char *target,
+                                           size_t target_size,
                                           bool date_value,
                                           bool *changed)
 {
@@ -816,6 +822,11 @@ static bool storage_apply_datetime_string(const char *value,
     return true;
 }
 
+static int storage_normalize_gps_baud(int value)
+{
+    return value == STORAGE_GPS_BAUD_SLOW ? STORAGE_GPS_BAUD_SLOW : STORAGE_GPS_BAUD_DEFAULT;
+}
+
 static void storage_normalize_system_config(bool *changed)
 {
     uint8_t normalized_volume =
@@ -824,6 +835,7 @@ static void storage_normalize_system_config(bool *changed)
     uint8_t normalized_wpm =
         storage_clamp_u8(s_system_config.key_in_wpm, STORAGE_KEY_WPM_MIN, STORAGE_KEY_WPM_MAX);
     keyer_key_in_mode_t normalized_mode = s_system_config.key_in_mode;
+    int normalized_gps_baud = storage_normalize_gps_baud(s_system_config.gps_baud);
     char normalized_date[STORAGE_SYSTEM_DATE_LEN + 1U];
     char normalized_time[STORAGE_SYSTEM_TIME_LEN + 1U];
 
@@ -853,6 +865,7 @@ static void storage_normalize_system_config(bool *changed)
         normalized_tone_hz != s_system_config.tone_hz ||
         normalized_wpm != s_system_config.key_in_wpm ||
         normalized_mode != s_system_config.key_in_mode ||
+        normalized_gps_baud != s_system_config.gps_baud ||
         strcmp(normalized_date, s_system_config.date) != 0 ||
         strcmp(normalized_time, s_system_config.time) != 0) {
         if (changed != NULL) {
@@ -864,6 +877,7 @@ static void storage_normalize_system_config(bool *changed)
     s_system_config.tone_hz = normalized_tone_hz;
     s_system_config.key_in_wpm = normalized_wpm;
     s_system_config.key_in_mode = normalized_mode;
+    s_system_config.gps_baud = normalized_gps_baud;
     snprintf(s_system_config.date, sizeof(s_system_config.date), "%s", normalized_date);
     snprintf(s_system_config.time, sizeof(s_system_config.time), "%s", normalized_time);
 }
@@ -1142,6 +1156,26 @@ static bool storage_apply_u16_setting(const char *value, uint16_t *target, bool 
     return true;
 }
 
+static bool storage_apply_gps_baud_setting(const char *value, bool *changed)
+{
+    uint32_t parsed;
+    int normalized;
+
+    if (!storage_parse_u32(value, &parsed) || parsed > (uint32_t)INT_MAX) {
+        if (changed != NULL) {
+            *changed = true;
+        }
+        return false;
+    }
+
+    normalized = storage_normalize_gps_baud((int)parsed);
+    if (parsed != (uint32_t)normalized && changed != NULL) {
+        *changed = true;
+    }
+    s_system_config.gps_baud = normalized;
+    return true;
+}
+
 static bool storage_apply_lesson_group_len(const char *value, bool *changed)
 {
     uint32_t parsed;
@@ -1204,6 +1238,9 @@ static void storage_apply_setting(storage_setting_section_t section,
                                            STORAGE_KEY_WPM_MAX,
                                            &s_system_config.key_in_wpm,
                                            changed);
+        } else if (storage_str_equal_ignore_case(key, "gps_baud")) {
+            *seen_keys |= STORAGE_KEY_SYSTEM_GPS_BAUD;
+            (void)storage_apply_gps_baud_setting(value, changed);
         } else if (storage_str_equal_ignore_case(key, "usb_drive")) {
             *seen_keys |= STORAGE_KEY_SYSTEM_USB_DRIVE;
             if (!storage_parse_bool(value, &usb_drive_requested) || usb_drive_requested) {
@@ -1476,14 +1513,15 @@ static bool storage_write_settings_file(void)
                            "# Mini-CW setting.txt\n"
                            "# Edit while USB Drive is ON, eject safely, then turn USB Drive OFF or reboot.\n"
                            "\n"
-                           "[system]\n"
-                           "volume=%u\n"
-                           "tone_hz=%u\n"
-                           "key_in=%s\n"
-                           "key_in_wpm=%u\n"
-                           "date=%s\n"
-                           "time=%s\n"
-                           "usb_drive=off\n"
+                            "[system]\n"
+                            "volume=%u\n"
+                            "tone_hz=%u\n"
+                            "key_in=%s\n"
+                            "key_in_wpm=%u\n"
+                            "date=%s\n"
+                            "time=%s\n"
+                            "gps_baud=%d\n"
+                            "usb_drive=off\n"
                            "\n"
                            "[keyer]\n"
                            "key_out=%s\n"
@@ -1529,6 +1567,7 @@ static bool storage_write_settings_file(void)
                            (unsigned)s_system_config.key_in_wpm,
                            s_system_config.date,
                            s_system_config.time,
+                           s_system_config.gps_baud,
                            storage_key_out_mode_label(s_keyer_config.key_out_mode),
                            keyer_service_paddle_mode_label(s_keyer_config.paddle_mode),
                            (unsigned)s_keyer_config.sk_wpm,

@@ -4,6 +4,7 @@ idf_component_register(
     REQUIRES
         audio_service
         cw_trainer_service
+        gps_service
         keyer_service
         platform_hal
         storage_service

@@ -488,7 +488,9 @@ esp_err_t platform_hal_set_datetime(const platform_hal_datetime_t *datetime,
             return err;
         }
 
-        effective_source = PLATFORM_HAL_TIME_SOURCE_DS3231;
+        if (effective_source != PLATFORM_HAL_TIME_SOURCE_GPS) {
+            effective_source = PLATFORM_HAL_TIME_SOURCE_DS3231;
+        }
         ESP_LOGI(TAG,
                  "DS3231 time updated: %04u-%02u-%02u %02u:%02u:%02u",
                  (unsigned)datetime->year,

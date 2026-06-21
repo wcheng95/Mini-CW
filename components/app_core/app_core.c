@@ -14,6 +14,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "gps_service.h"
 #include "keyer_service.h"
 #include "platform_hal.h"
 #include "storage_service.h"
@@ -31,6 +32,10 @@ static const char *TAG = "app_core";
 #define APP_INPUT_POLL_MS 5U
 #define APP_SYSTEM_CONFIG_SAVE_DELAY_MS 1000U
 #define APP_SYSTEM_TIME_REFRESH_MS 1000U
+#define APP_GPS_TIME_SYNC_MS 1000U
+#define APP_GPS_FIX_STALE_MS 5000U
+#define APP_GPS_BAUD_DEFAULT 115200
+#define APP_GPS_BAUD_SLOW 9600
 #define APP_SYSTEM_DEFAULT_DATE "2026-01-01"
 #define APP_SYSTEM_DEFAULT_TIME "00:00:00"
 #define APP_KEYER_LOG_TEXT_MAX 1024U
@@ -63,6 +68,10 @@ static TickType_t s_system_config_save_due;
 static TickType_t s_system_time_refresh_due;
 static bool s_keyer_config_dirty;
 static TickType_t s_keyer_config_save_due;
+static int s_gps_baud = APP_GPS_BAUD_DEFAULT;
+static bool s_gps_time_synced_once;
+static int s_gps_last_time_sync_hour_key = -1;
+static TickType_t s_gps_time_sync_due;
 
 typedef struct {
     bool tx_pending;
@@ -303,6 +312,11 @@ static void app_core_format_datetime_time(const platform_hal_datetime_t *datetim
              (unsigned)datetime->second);
 }
 
+static int app_core_normalize_gps_baud(int value)
+{
+    return value == APP_GPS_BAUD_SLOW ? APP_GPS_BAUD_SLOW : APP_GPS_BAUD_DEFAULT;
+}
+
 static storage_system_config_t app_core_current_system_config(void)
 {
     platform_hal_datetime_t datetime;
@@ -311,6 +325,7 @@ static storage_system_config_t app_core_current_system_config(void)
         .tone_hz = audio_service_get_tone_hz(),
         .key_in_mode = keyer_service_get_key_in_mode(),
         .key_in_wpm = keyer_service_get_key_in_wpm(),
+        .gps_baud = app_core_normalize_gps_baud(s_gps_baud),
     };
 
     if (platform_hal_get_datetime(&datetime) == ESP_OK) {
@@ -556,7 +571,8 @@ static bool app_core_system_config_equal_common(const storage_system_config_t *a
     }
 
     return a->volume == b->volume && a->tone_hz == b->tone_hz &&
-           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm;
+           a->key_in_mode == b->key_in_mode && a->key_in_wpm == b->key_in_wpm &&
+           a->gps_baud == b->gps_baud;
 }
 
 static bool app_core_system_config_equal(const storage_system_config_t *a,
@@ -602,6 +618,93 @@ static void app_core_maybe_refresh_system_time(void)
 
     s_system_time_refresh_due = now + app_core_ms_to_delay_ticks(APP_SYSTEM_TIME_REFRESH_MS);
     ui_service_refresh();
+}
+
+static int app_core_datetime_hour_key(const platform_hal_datetime_t *datetime)
+{
+    if (datetime == NULL) {
+        return -1;
+    }
+
+    return (int)((((uint32_t)datetime->year * 100U + datetime->month) * 100U + datetime->day) *
+                     100U +
+                 datetime->hour);
+}
+
+static bool app_core_gps_fix_fresh(const gps_service_state_t *state)
+{
+    uint32_t now_ms;
+
+    if (state == NULL || state->last_rx_ms == 0U) {
+        return false;
+    }
+
+    now_ms = (uint32_t)(xTaskGetTickCount() * portTICK_PERIOD_MS);
+    return (uint32_t)(now_ms - state->last_rx_ms) <= APP_GPS_FIX_STALE_MS;
+}
+
+static void app_core_gps_update(void)
+{
+    gps_service_state_t state;
+    platform_hal_datetime_t datetime;
+    TickType_t now;
+    int detected_baud = 0;
+    int hour_key;
+    bool do_time_sync;
+
+    gps_service_update();
+
+    if (gps_service_take_baud_update(&detected_baud)) {
+        detected_baud = app_core_normalize_gps_baud(detected_baud);
+        if (detected_baud != s_gps_baud) {
+            s_gps_baud = detected_baud;
+            app_core_mark_system_config_dirty();
+            ESP_LOGI(TAG, "GPS baud detected: %d", s_gps_baud);
+        }
+    }
+
+    now = xTaskGetTickCount();
+    if (!app_core_tick_reached(now, s_gps_time_sync_due)) {
+        return;
+    }
+    s_gps_time_sync_due = now + app_core_ms_to_delay_ticks(APP_GPS_TIME_SYNC_MS);
+
+    if (!gps_service_get_state(&state) || !state.valid_fix || state.date_utc[0] == '\0' ||
+        state.time_utc[0] == '\0' || !app_core_gps_fix_fresh(&state) ||
+        !app_core_datetime_from_strings(state.date_utc, state.time_utc, &datetime)) {
+        return;
+    }
+
+    hour_key = app_core_datetime_hour_key(&datetime);
+    do_time_sync = !s_gps_time_synced_once ||
+                   platform_hal_get_time_source() != PLATFORM_HAL_TIME_SOURCE_GPS;
+    if (!do_time_sync && datetime.minute == 0U && datetime.second <= 5U &&
+        hour_key >= 0 && hour_key != s_gps_last_time_sync_hour_key) {
+        do_time_sync = true;
+    }
+
+    if (!do_time_sync) {
+        return;
+    }
+
+    if (audio_service_is_busy() || keyer_service_is_tx_active()) {
+        return;
+    }
+
+    if (platform_hal_set_datetime(&datetime, PLATFORM_HAL_TIME_SOURCE_GPS) != ESP_OK) {
+        ESP_LOGW(TAG, "GPS time sync failed: %s %s", state.date_utc, state.time_utc);
+        return;
+    }
+
+    s_gps_time_synced_once = true;
+    if (hour_key >= 0) {
+        s_gps_last_time_sync_hour_key = hour_key;
+    }
+    app_core_mark_system_config_dirty();
+    if (s_app.mode == APP_MODE_SYSTEM) {
+        ui_service_refresh();
+    }
+    ESP_LOGI(TAG, "GPS time synced: %s %s", state.date_utc, state.time_utc);
 }
 
 static void app_core_maybe_save_dirty_config(void)
@@ -661,6 +764,7 @@ static void app_core_apply_system_config(const storage_system_config_t *config, 
     audio_service_set_tone_hz(config->tone_hz);
     keyer_service_set_key_in_mode(config->key_in_mode);
     keyer_service_set_key_in_wpm(config->key_in_wpm);
+    s_gps_baud = app_core_normalize_gps_baud(config->gps_baud);
 
     if (apply_datetime &&
         app_core_datetime_from_strings(config->date, config->time, &datetime)) {
@@ -1888,6 +1992,9 @@ void app_core_init(void)
     cw_trainer_service_init();
     app_core_load_persisted_settings();
 
+    ESP_LOGI(TAG, "init: gps_service");
+    gps_service_start(s_gps_baud);
+
     s_app.initialized = true;
     app_core_sync_mode_from_ui();
     ui_service_show_demo_screen();
@@ -1910,6 +2017,7 @@ void app_core_run(void)
         ui_input_event_t event = ui_service_poll_input();
         app_core_handle_ui_event(event);
         app_core_keyer_update();
+        app_core_gps_update();
         app_core_maybe_refresh_system_time();
         app_core_maybe_save_dirty_config();
         vTaskDelay(app_core_ms_to_delay_ticks(APP_INPUT_POLL_MS));
