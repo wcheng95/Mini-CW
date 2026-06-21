@@ -10,11 +10,14 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_partition.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "tinyusb.h"
 #include "tusb_msc_storage.h"
 #include "wear_levelling.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdio.h>
@@ -32,6 +35,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_QSOCALLS_HEADER "call,name\n"
 #define STORAGE_FATFS_MAX_FILES 4
 #define STORAGE_FATFS_ALLOC_UNIT 512
+#define STORAGE_USB_DISCONNECT_SETTLE_MS 250U
 #define STORAGE_SETTINGS_LINE_MAX 128
 #define STORAGE_QSOCALLS_LINE_MAX 128
 #define STORAGE_VOLUME_MIN 0U
@@ -171,6 +175,7 @@ static bool s_storage_ready;
 static bool s_fatfs_mounted;
 static bool s_usb_drive_enabled;
 static bool s_tinyusb_installed;
+static bool s_usb_drive_transition;
 static bool s_settings_loaded;
 
 static storage_system_config_t s_system_config;
@@ -191,6 +196,20 @@ static void storage_mount_changed_cb(tinyusb_msc_event_t *event)
              event->mount_changed_data.is_mounted ? "yes" : "no");
 }
 
+static bool storage_fatfs_path_accessible(void)
+{
+    DIR *dir;
+
+    errno = 0;
+    dir = opendir(STORAGE_FATFS_BASE_PATH);
+    if (dir == NULL) {
+        return false;
+    }
+
+    (void)closedir(dir);
+    return true;
+}
+
 static esp_err_t storage_mount_fatfs(void)
 {
     esp_err_t err;
@@ -200,13 +219,25 @@ static esp_err_t storage_mount_fatfs(void)
     }
 
     if (s_fatfs_mounted) {
-        return ESP_OK;
+        if (storage_fatfs_path_accessible()) {
+            return ESP_OK;
+        }
+
+        ESP_LOGE(TAG, "FATFS flag set but %s is not accessible: errno=%d", STORAGE_FATFS_BASE_PATH, errno);
+        s_fatfs_mounted = false;
+        (void)tinyusb_msc_storage_unmount();
     }
 
     err = tinyusb_msc_storage_mount(STORAGE_FATFS_BASE_PATH);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mount FATFS at %s failed: %s", STORAGE_FATFS_BASE_PATH, esp_err_to_name(err));
         return err;
+    }
+
+    if (!storage_fatfs_path_accessible()) {
+        ESP_LOGE(TAG, "mount FATFS at %s did not make the path accessible: errno=%d", STORAGE_FATFS_BASE_PATH, errno);
+        (void)tinyusb_msc_storage_unmount();
+        return ESP_FAIL;
     }
 
     s_fatfs_mounted = true;
@@ -277,6 +308,11 @@ static esp_err_t storage_uninstall_tinyusb(void)
     if (!s_tinyusb_installed) {
         return ESP_OK;
     }
+
+    if (!tud_disconnect()) {
+        ESP_LOGW(TAG, "TinyUSB disconnect request was not accepted before uninstall");
+    }
+    vTaskDelay(pdMS_TO_TICKS(STORAGE_USB_DISCONNECT_SETTLE_MS));
 
     err = tinyusb_driver_uninstall();
     if (err != ESP_OK) {
@@ -2239,6 +2275,7 @@ bool storage_usb_drive_is_enabled(void)
 bool storage_usb_drive_set_enabled(bool enabled)
 {
     esp_err_t err;
+    bool result = false;
 
     if (!s_storage_ready) {
         ESP_LOGW(TAG, "USB Drive change skipped: storage is not ready");
@@ -2249,36 +2286,48 @@ bool storage_usb_drive_set_enabled(bool enabled)
         return true;
     }
 
+    if (s_usb_drive_transition) {
+        ESP_LOGW(TAG, "USB Drive change skipped: ownership transition is already in progress");
+        return false;
+    }
+
+    s_usb_drive_transition = true;
+
     if (enabled) {
         err = storage_unmount_fatfs();
         if (err != ESP_OK) {
-            return false;
+            goto done;
         }
 
         err = storage_install_tinyusb();
         if (err != ESP_OK) {
             (void)storage_mount_fatfs();
-            return false;
+            goto done;
         }
 
         s_usb_drive_enabled = true;
         ESP_LOGI(TAG, "USB Drive ON: PC owns FATFS");
-        return true;
+        result = true;
+        goto done;
     }
 
     err = storage_uninstall_tinyusb();
     if (err != ESP_OK) {
-        return false;
+        goto done;
     }
 
     err = storage_mount_fatfs();
     if (err != ESP_OK) {
         s_usb_drive_enabled = true;
         ESP_LOGE(TAG, "USB Drive remains logically ON until FATFS remount succeeds");
-        return false;
+        goto done;
     }
 
     s_usb_drive_enabled = false;
     ESP_LOGI(TAG, "USB Drive OFF: firmware owns FATFS");
-    return true;
+    result = true;
+
+done:
+    s_usb_drive_transition = false;
+    return result;
 }
