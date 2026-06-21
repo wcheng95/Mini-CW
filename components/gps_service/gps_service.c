@@ -29,6 +29,7 @@ static const char *TAG = "gps_service";
 #define GPS_SERVICE_LINE_MAX 128U
 #define GPS_SERVICE_PROBE_WINDOW_MS 2500U
 #define GPS_SERVICE_UART_RX_BUF_SIZE 2048
+#define GPS_SERVICE_GRID8_LEN 8U
 
 static gps_service_state_t s_state;
 static char s_line_buffer[GPS_SERVICE_LINE_MAX + 1U];
@@ -164,6 +165,139 @@ static bool gps_service_format_rmc_date(const char *date_field, char *dest, size
              (unsigned)year,
              (unsigned)month,
              (unsigned)day);
+    return true;
+}
+
+static bool gps_service_parse_nmea_coord(const char *value,
+                                         const char *direction,
+                                         bool longitude,
+                                         double *out_degrees)
+{
+    char *end = NULL;
+    double raw;
+    int degrees;
+    double minutes;
+    double result;
+
+    if (value == NULL || direction == NULL || out_degrees == NULL ||
+        value[0] == '\0' || direction[0] == '\0') {
+        return false;
+    }
+
+    if (longitude) {
+        if (direction[0] != 'E' && direction[0] != 'W') {
+            return false;
+        }
+    } else if (direction[0] != 'N' && direction[0] != 'S') {
+        return false;
+    }
+
+    raw = strtod(value, &end);
+    if (end == value) {
+        return false;
+    }
+
+    degrees = (int)(raw / 100.0);
+    minutes = raw - (double)(degrees * 100);
+    if (minutes < 0.0 || minutes >= 60.0) {
+        return false;
+    }
+
+    result = (double)degrees + minutes / 60.0;
+    if (direction[0] == 'S' || direction[0] == 'W') {
+        result = -result;
+    }
+
+    if (longitude) {
+        if (result < -180.0 || result > 180.0) {
+            return false;
+        }
+    } else if (result < -90.0 || result > 90.0) {
+        return false;
+    }
+
+    *out_degrees = result;
+    return true;
+}
+
+static int gps_service_clamp_int(int value, int min_value, int max_value)
+{
+    if (value < min_value) {
+        return min_value;
+    }
+    if (value > max_value) {
+        return max_value;
+    }
+    return value;
+}
+
+static bool gps_service_format_grid8(double latitude, double longitude, char *dest, size_t dest_size)
+{
+    int field_lon;
+    int field_lat;
+    int square_lon;
+    int square_lat;
+    int sub_lon;
+    int sub_lat;
+    int ext_lon;
+    int ext_lat;
+    const double sub_lon_w = 2.0 / 24.0;
+    const double sub_lat_h = 1.0 / 24.0;
+    const double ext_lon_w = sub_lon_w / 10.0;
+    const double ext_lat_h = sub_lat_h / 10.0;
+
+    if (dest == NULL || dest_size < GPS_SERVICE_GRID8_LEN + 1U ||
+        longitude < -180.0 || longitude > 180.0 ||
+        latitude < -90.0 || latitude > 90.0) {
+        return false;
+    }
+
+    if (longitude >= 180.0) {
+        longitude = 179.999999;
+    }
+    if (latitude >= 90.0) {
+        latitude = 89.999999;
+    }
+
+    longitude += 180.0;
+    latitude += 90.0;
+
+    field_lon = (int)(longitude / 20.0);
+    field_lat = (int)(latitude / 10.0);
+    longitude -= (double)field_lon * 20.0;
+    latitude -= (double)field_lat * 10.0;
+
+    square_lon = (int)(longitude / 2.0);
+    square_lat = (int)(latitude / 1.0);
+    longitude -= (double)square_lon * 2.0;
+    latitude -= (double)square_lat * 1.0;
+
+    sub_lon = (int)(longitude / sub_lon_w);
+    sub_lat = (int)(latitude / sub_lat_h);
+    longitude -= (double)sub_lon * sub_lon_w;
+    latitude -= (double)sub_lat * sub_lat_h;
+
+    ext_lon = (int)(longitude / ext_lon_w);
+    ext_lat = (int)(latitude / ext_lat_h);
+
+    field_lon = gps_service_clamp_int(field_lon, 0, 17);
+    field_lat = gps_service_clamp_int(field_lat, 0, 17);
+    square_lon = gps_service_clamp_int(square_lon, 0, 9);
+    square_lat = gps_service_clamp_int(square_lat, 0, 9);
+    sub_lon = gps_service_clamp_int(sub_lon, 0, 23);
+    sub_lat = gps_service_clamp_int(sub_lat, 0, 23);
+    ext_lon = gps_service_clamp_int(ext_lon, 0, 9);
+    ext_lat = gps_service_clamp_int(ext_lat, 0, 9);
+
+    dest[0] = (char)('A' + field_lon);
+    dest[1] = (char)('A' + field_lat);
+    dest[2] = (char)('0' + square_lon);
+    dest[3] = (char)('0' + square_lat);
+    dest[4] = (char)('a' + sub_lon);
+    dest[5] = (char)('a' + sub_lat);
+    dest[6] = (char)('0' + ext_lon);
+    dest[7] = (char)('0' + ext_lat);
+    dest[8] = '\0';
     return true;
 }
 
@@ -359,6 +493,8 @@ static bool gps_service_parse_sentence(const char *raw_line)
     char *fields[20];
     size_t field_count;
     const char *type;
+    double latitude;
+    double longitude;
 
     if (!gps_service_nmea_checksum_ok(raw_line, payload, sizeof(payload))) {
         return false;
@@ -373,12 +509,16 @@ static bool gps_service_parse_sentence(const char *raw_line)
     if (gps_service_sentence_type_ends_with(type, "RMC") && field_count >= 10U) {
         if (strcmp(fields[2], "A") == 0 &&
             gps_service_format_rmc_time(fields[1], s_state.time_utc, sizeof(s_state.time_utc)) &&
-            gps_service_format_rmc_date(fields[9], s_state.date_utc, sizeof(s_state.date_utc))) {
+            gps_service_format_rmc_date(fields[9], s_state.date_utc, sizeof(s_state.date_utc)) &&
+            gps_service_parse_nmea_coord(fields[3], fields[4], false, &latitude) &&
+            gps_service_parse_nmea_coord(fields[5], fields[6], true, &longitude) &&
+            gps_service_format_grid8(latitude, longitude, s_state.grid8, sizeof(s_state.grid8))) {
             s_state.valid_fix = true;
         } else {
             s_state.valid_fix = false;
             s_state.date_utc[0] = '\0';
             s_state.time_utc[0] = '\0';
+            s_state.grid8[0] = '\0';
         }
     } else if (gps_service_sentence_type_ends_with(type, "GGA") && field_count >= 8U) {
         if (fields[7][0] != '\0') {

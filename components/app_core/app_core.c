@@ -36,6 +36,7 @@ static const char *TAG = "app_core";
 #define APP_GPS_FIX_STALE_MS 5000U
 #define APP_GPS_BAUD_DEFAULT 115200
 #define APP_GPS_BAUD_SLOW 9600
+#define APP_GPS_GRID_LEN 8U
 #define APP_SYSTEM_DEFAULT_DATE "2026-01-01"
 #define APP_SYSTEM_DEFAULT_TIME "00:00:00"
 #define APP_KEYER_LOG_TEXT_MAX 1024U
@@ -70,6 +71,7 @@ static bool s_keyer_config_dirty;
 static TickType_t s_keyer_config_save_due;
 static int s_gps_baud = APP_GPS_BAUD_DEFAULT;
 static bool s_gps_time_synced_once;
+static bool s_gps_grid_logged;
 static int s_gps_last_time_sync_hour_key = -1;
 static TickType_t s_gps_time_sync_due;
 
@@ -475,6 +477,36 @@ static bool app_core_keyer_log_begin(void)
     return true;
 }
 
+static bool app_core_keyer_log_gps_grid(const char *grid8)
+{
+    char timestamp[APP_KEYER_LOG_TIMESTAMP_LEN + 1U];
+    char minute[APP_KEYER_LOG_MINUTE_LEN + 1U];
+    char line[40];
+    int line_len;
+
+    if (grid8 == NULL || strlen(grid8) != APP_GPS_GRID_LEN) {
+        return false;
+    }
+
+    if (!app_core_keyer_log_format_time(timestamp, sizeof(timestamp), minute, sizeof(minute))) {
+        return false;
+    }
+
+    line_len = snprintf(line, sizeof(line), "G [%s][x.xxx] %s", timestamp, grid8);
+    if (line_len <= 0 || (size_t)line_len >= sizeof(line)) {
+        ESP_LOGW(TAG, "GPS grid log line format failed or overflowed");
+        return false;
+    }
+
+    if (!storage_session_log_append(line)) {
+        ESP_LOGW(TAG, "GPS grid log append failed; line dropped");
+        return false;
+    }
+
+    ESP_LOGI(TAG, "GPS grid logged: %s", grid8);
+    return true;
+}
+
 static bool app_core_keyer_log_normalize_char(char ch, char *out_ch)
 {
     unsigned char value = (unsigned char)ch;
@@ -683,28 +715,32 @@ static void app_core_gps_update(void)
         do_time_sync = true;
     }
 
-    if (!do_time_sync) {
-        return;
+    if (do_time_sync) {
+        if (audio_service_is_busy() || keyer_service_is_tx_active()) {
+            if (!s_gps_time_synced_once) {
+                return;
+            }
+        } else if (platform_hal_set_datetime(&datetime, PLATFORM_HAL_TIME_SOURCE_GPS) == ESP_OK) {
+            s_gps_time_synced_once = true;
+            if (hour_key >= 0) {
+                s_gps_last_time_sync_hour_key = hour_key;
+            }
+            app_core_mark_system_config_dirty();
+            if (s_app.mode == APP_MODE_SYSTEM) {
+                ui_service_refresh();
+            }
+            ESP_LOGI(TAG, "GPS time synced: %s %s", state.date_utc, state.time_utc);
+        } else {
+            ESP_LOGW(TAG, "GPS time sync failed: %s %s", state.date_utc, state.time_utc);
+            if (!s_gps_time_synced_once) {
+                return;
+            }
+        }
     }
 
-    if (audio_service_is_busy() || keyer_service_is_tx_active()) {
-        return;
+    if (!s_gps_grid_logged && s_gps_time_synced_once && state.grid8[0] != '\0') {
+        s_gps_grid_logged = app_core_keyer_log_gps_grid(state.grid8);
     }
-
-    if (platform_hal_set_datetime(&datetime, PLATFORM_HAL_TIME_SOURCE_GPS) != ESP_OK) {
-        ESP_LOGW(TAG, "GPS time sync failed: %s %s", state.date_utc, state.time_utc);
-        return;
-    }
-
-    s_gps_time_synced_once = true;
-    if (hour_key >= 0) {
-        s_gps_last_time_sync_hour_key = hour_key;
-    }
-    app_core_mark_system_config_dirty();
-    if (s_app.mode == APP_MODE_SYSTEM) {
-        ui_service_refresh();
-    }
-    ESP_LOGI(TAG, "GPS time synced: %s %s", state.date_utc, state.time_utc);
 }
 
 static void app_core_maybe_save_dirty_config(void)

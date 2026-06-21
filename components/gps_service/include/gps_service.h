@@ -20,6 +20,7 @@ typedef struct {
     uint8_t satellites;
     char date_utc[11];
     char time_utc[9];
+    char grid8[9];
     uint32_t last_rx_ms;
     int active_baud;
     bool baud_locked;
