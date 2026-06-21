@@ -999,8 +999,9 @@ static void keyer_emit_decoder_result(keyer_decoder_result_t result)
         break;
     case KEYER_DECODER_RESULT_INVALID:
         ESP_LOGW(TAG, "invalid Morse pattern ignored");
-        s_decoder_char_finalized = false;
-        s_decoder_space_emitted = true;
+        keyer_push_event(KEYER_EVENT_CHAR_COMPLETE, '~', 0U);
+        s_decoder_char_finalized = true;
+        s_decoder_space_emitted = false;
         break;
     case KEYER_DECODER_RESULT_NONE:
     default:
