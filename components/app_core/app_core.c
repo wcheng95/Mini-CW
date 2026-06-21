@@ -22,6 +22,7 @@
 #include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -32,6 +33,11 @@ static const char *TAG = "app_core";
 #define APP_SYSTEM_TIME_REFRESH_MS 1000U
 #define APP_SYSTEM_DEFAULT_DATE "2026-01-01"
 #define APP_SYSTEM_DEFAULT_TIME "00:00:00"
+#define APP_KEYER_LOG_TEXT_MAX 1024U
+#define APP_KEYER_LOG_MINUTE_LEN 12U
+#define APP_KEYER_LOG_TIMESTAMP_LEN 15U
+#define APP_KEYER_LOG_LINE_MAX (APP_KEYER_LOG_TEXT_MAX + 40U)
+#define APP_KEYER_LOG_FLUSH_IDLE_MS 3000U
 
 static TickType_t app_core_ms_to_delay_ticks(uint32_t ms)
 {
@@ -74,6 +80,15 @@ typedef struct {
     TickType_t tune_timeout_due;
     bool tune_last_latched;
     bool tune_last_output_active;
+
+    bool log_active;
+    bool log_truncated;
+    bool log_flush_retry_pending;
+    char log_minute[APP_KEYER_LOG_MINUTE_LEN + 1U];
+    char log_timestamp[APP_KEYER_LOG_TIMESTAMP_LEN + 1U];
+    char log_text[APP_KEYER_LOG_TEXT_MAX + 1U];
+    size_t log_text_len;
+    TickType_t log_flush_due;
 } app_keyer_state_t;
 
 static app_keyer_state_t s_keyer;
@@ -310,6 +325,274 @@ static storage_system_config_t app_core_current_system_config(void)
     }
 
     return config;
+}
+
+static void app_core_keyer_log_reset(void)
+{
+    s_keyer.log_active = false;
+    s_keyer.log_truncated = false;
+    s_keyer.log_flush_retry_pending = false;
+    s_keyer.log_minute[0] = '\0';
+    s_keyer.log_timestamp[0] = '\0';
+    s_keyer.log_text[0] = '\0';
+    s_keyer.log_text_len = 0U;
+    s_keyer.log_flush_due = 0;
+}
+
+static bool app_core_keyer_log_format_time(char *timestamp,
+                                           size_t timestamp_size,
+                                           char *minute,
+                                           size_t minute_size)
+{
+    platform_hal_datetime_t datetime = {
+        .year = 2026U,
+        .month = 1U,
+        .day = 1U,
+        .hour = 0U,
+        .minute = 0U,
+        .second = 0U,
+        .source = PLATFORM_HAL_TIME_SOURCE_SOFTWARE,
+    };
+    int timestamp_len;
+    int minute_len;
+
+    if (timestamp == NULL || timestamp_size == 0U || minute == NULL || minute_size == 0U) {
+        return false;
+    }
+
+    (void)platform_hal_get_datetime(&datetime);
+    timestamp_len = snprintf(timestamp,
+                             timestamp_size,
+                             "%04u%02u%02u %02u%02u%02u",
+                             (unsigned)datetime.year,
+                             (unsigned)datetime.month,
+                             (unsigned)datetime.day,
+                             (unsigned)datetime.hour,
+                             (unsigned)datetime.minute,
+                             (unsigned)datetime.second);
+    minute_len = snprintf(minute,
+                          minute_size,
+                          "%04u%02u%02u%02u%02u",
+                          (unsigned)datetime.year,
+                          (unsigned)datetime.month,
+                          (unsigned)datetime.day,
+                          (unsigned)datetime.hour,
+                          (unsigned)datetime.minute);
+
+    return timestamp_len > 0 && (size_t)timestamp_len < timestamp_size &&
+           minute_len > 0 && (size_t)minute_len < minute_size;
+}
+
+static void app_core_keyer_log_schedule_flush(void)
+{
+    if (!s_keyer.log_active) {
+        return;
+    }
+
+    s_keyer.log_flush_due =
+        xTaskGetTickCount() + app_core_ms_to_delay_ticks(APP_KEYER_LOG_FLUSH_IDLE_MS);
+}
+
+static bool app_core_keyer_log_format_line(char *line, size_t line_size)
+{
+    const char *trunc_suffix = s_keyer.log_truncated ? " [TRUNC]" : "";
+    int line_len;
+
+    if (line == NULL || line_size == 0U) {
+        return false;
+    }
+
+    line_len = snprintf(line,
+                        line_size,
+                        "T [%s][x.xxx] %s%s",
+                        s_keyer.log_timestamp,
+                        s_keyer.log_text,
+                        trunc_suffix);
+    if (line_len <= 0 || (size_t)line_len >= line_size) {
+        ESP_LOGW(TAG, "keyer log line format failed or overflowed");
+        return false;
+    }
+
+    return true;
+}
+
+static bool app_core_keyer_log_flush(void)
+{
+    char line[APP_KEYER_LOG_LINE_MAX];
+
+    if (!s_keyer.log_active) {
+        return true;
+    }
+
+    if (s_keyer.log_text_len > 0U) {
+        if (!app_core_keyer_log_format_line(line, sizeof(line))) {
+            s_keyer.log_flush_retry_pending = true;
+            app_core_keyer_log_schedule_flush();
+            return false;
+        }
+
+        if (!storage_session_log_append(line)) {
+            ESP_LOGW(TAG, "keyer log append failed; retry scheduled");
+            s_keyer.log_flush_retry_pending = true;
+            app_core_keyer_log_schedule_flush();
+            return false;
+        }
+    }
+
+    app_core_keyer_log_reset();
+    return true;
+}
+
+static bool app_core_keyer_log_flush_if_minute_changed(void)
+{
+    char timestamp[APP_KEYER_LOG_TIMESTAMP_LEN + 1U];
+    char minute[APP_KEYER_LOG_MINUTE_LEN + 1U];
+
+    if (!s_keyer.log_active) {
+        return true;
+    }
+
+    if (!app_core_keyer_log_format_time(timestamp, sizeof(timestamp), minute, sizeof(minute))) {
+        return false;
+    }
+
+    if (strcmp(minute, s_keyer.log_minute) != 0) {
+        if (s_keyer.log_flush_retry_pending && s_keyer.log_flush_due != 0 &&
+            !app_core_tick_reached(xTaskGetTickCount(), s_keyer.log_flush_due)) {
+            return false;
+        }
+
+        return app_core_keyer_log_flush();
+    }
+
+    return true;
+}
+
+static bool app_core_keyer_log_begin(void)
+{
+    if (!app_core_keyer_log_format_time(s_keyer.log_timestamp,
+                                        sizeof(s_keyer.log_timestamp),
+                                        s_keyer.log_minute,
+                                        sizeof(s_keyer.log_minute))) {
+        return false;
+    }
+
+    s_keyer.log_active = true;
+    s_keyer.log_truncated = false;
+    s_keyer.log_flush_retry_pending = false;
+    s_keyer.log_text[0] = '\0';
+    s_keyer.log_text_len = 0U;
+    return true;
+}
+
+static bool app_core_keyer_log_normalize_char(char ch, char *out_ch)
+{
+    unsigned char value = (unsigned char)ch;
+
+    if (out_ch == NULL) {
+        return false;
+    }
+
+    if (ch == '\r' || ch == '\n') {
+        *out_ch = ' ';
+        return true;
+    }
+
+    if (!isprint(value)) {
+        return false;
+    }
+
+    *out_ch = ch;
+    return true;
+}
+
+static void app_core_keyer_log_append_char(char ch)
+{
+    char log_ch;
+
+    if (!app_core_keyer_log_normalize_char(ch, &log_ch)) {
+        return;
+    }
+
+    if (!app_core_keyer_log_flush_if_minute_changed()) {
+        return;
+    }
+    if (!s_keyer.log_active && !app_core_keyer_log_begin()) {
+        return;
+    }
+
+    if (s_keyer.log_text_len >= APP_KEYER_LOG_TEXT_MAX) {
+        if (!s_keyer.log_truncated) {
+            s_keyer.log_truncated = true;
+            ESP_LOGW(TAG, "keyer log minute text truncated");
+            app_core_keyer_log_schedule_flush();
+        }
+        return;
+    }
+
+    s_keyer.log_text[s_keyer.log_text_len++] = log_ch;
+    s_keyer.log_text[s_keyer.log_text_len] = '\0';
+    app_core_keyer_log_schedule_flush();
+}
+
+static void app_core_keyer_log_append_text(const char *text)
+{
+    if (text == NULL) {
+        return;
+    }
+
+    while (*text != '\0') {
+        app_core_keyer_log_append_char(*text++);
+    }
+}
+
+static bool app_core_keyer_log_tx_will_insert_space(const char *text, bool insert_space)
+{
+    char tail[2];
+
+    if (!insert_space || text == NULL || text[0] == '\0' || text[0] == ' ') {
+        return false;
+    }
+
+    keyer_service_tx_copy_text(tail, sizeof(tail));
+    return tail[0] != '\0' && tail[0] != ' ';
+}
+
+static void app_core_keyer_log_backspace(void)
+{
+    if (!app_core_keyer_log_flush_if_minute_changed()) {
+        return;
+    }
+
+    if (!s_keyer.log_active || s_keyer.log_text_len == 0U) {
+        return;
+    }
+
+    --s_keyer.log_text_len;
+    s_keyer.log_text[s_keyer.log_text_len] = '\0';
+    if (s_keyer.log_text_len == 0U) {
+        app_core_keyer_log_reset();
+    } else {
+        app_core_keyer_log_schedule_flush();
+    }
+}
+
+static void app_core_keyer_log_update(void)
+{
+    TickType_t now;
+
+    if (!s_keyer.log_active) {
+        return;
+    }
+
+    if (!app_core_keyer_log_flush_if_minute_changed() || !s_keyer.log_active) {
+        return;
+    }
+
+    now = xTaskGetTickCount();
+    if (s_keyer.log_flush_due != 0 && app_core_tick_reached(now, s_keyer.log_flush_due)) {
+        (void)app_core_keyer_log_flush();
+    }
 }
 
 static bool app_core_system_config_equal_common(const storage_system_config_t *a,
@@ -596,6 +879,7 @@ static void app_core_keyer_cancel_repeat(void)
 
 static void app_core_keyer_clear_tx_fifo(void)
 {
+    (void)app_core_keyer_log_flush();
     s_keyer.tx_pending = false;
     s_keyer.last_append_was_message = false;
     app_core_keyer_cancel_repeat();
@@ -641,6 +925,7 @@ static void app_core_keyer_append_tx_char(char key)
     char normalized = key == ' ' ? ' ' : (char)toupper((unsigned char)key);
     char text[2] = {normalized, '\0'};
     bool insert_space;
+    bool log_insert_space;
 
     if (normalized != ' ' && audio_service_get_cw_pattern(normalized) == NULL) {
         ui_service_keyer_set_status("Unsupported");
@@ -649,11 +934,16 @@ static void app_core_keyer_append_tx_char(char key)
 
     app_core_keyer_cancel_repeat();
     insert_space = s_keyer.last_append_was_message && normalized != ' ';
+    log_insert_space = app_core_keyer_log_tx_will_insert_space(text, insert_space);
     if (!keyer_service_tx_append_text(text, insert_space)) {
         ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
+    if (log_insert_space) {
+        app_core_keyer_log_append_char(' ');
+    }
+    app_core_keyer_log_append_text(text);
     if (insert_space) {
         keyer_service_op_feed_char(' ');
     }
@@ -666,6 +956,7 @@ static void app_core_keyer_append_tx_char(char key)
 static void app_core_keyer_backspace_tx(void)
 {
     if (keyer_service_tx_backspace()) {
+        app_core_keyer_log_backspace();
         if (!keyer_service_tx_has_text()) {
             s_keyer.tx_pending = false;
             s_keyer.last_append_was_message = false;
@@ -678,6 +969,7 @@ static void app_core_keyer_append_message(uint8_t message_index)
 {
     const char *message;
     bool insert_space;
+    bool log_insert_space;
     bool repeat_m1;
 
     if (message_index < 1U || message_index > KEYER_MESSAGE_COUNT) {
@@ -691,11 +983,16 @@ static void app_core_keyer_append_message(uint8_t message_index)
 
     insert_space = keyer_service_tx_has_text();
     message = keyer_service_get_message((uint8_t)(message_index - 1U));
+    log_insert_space = app_core_keyer_log_tx_will_insert_space(message, insert_space);
     if (!keyer_service_tx_append_text(message, insert_space)) {
         ui_service_keyer_set_status("TX buffer full");
         return;
     }
 
+    if (log_insert_space) {
+        app_core_keyer_log_append_char(' ');
+    }
+    app_core_keyer_log_append_text(message);
     if (insert_space) {
         keyer_service_op_feed_char(' ');
     }
@@ -740,6 +1037,7 @@ static void app_core_keyer_repeat_update(void)
         return;
     }
 
+    app_core_keyer_log_append_text(message);
     keyer_service_op_feed_text(message);
     s_keyer.last_append_was_message = true;
     app_core_keyer_sync_tx_display(true);
@@ -807,6 +1105,8 @@ static void app_core_keyer_set_tune_latched(bool latched)
 
 static void app_core_keyer_update(void)
 {
+    app_core_keyer_log_update();
+
     if (keyer_service_take_sk_wpm_save_request()) {
         app_core_mark_keyer_config_dirty();
         ui_service_refresh();
@@ -1048,6 +1348,10 @@ static void app_core_handle_usb_drive_changed(const ui_input_event_t *event)
 
     if (event != NULL && event->setting == UI_SETTING_USB_DRIVE) {
         enabled = event->value != 0;
+    }
+
+    if (enabled) {
+        app_core_keyer_log_flush();
     }
 
     /* Storage owns FATFS and USB MSC; app_core only routes the UI request. */
@@ -1353,14 +1657,17 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
 
     switch (event->type) {
     case KEYER_EVENT_CHAR_COMPLETE:
+        app_core_keyer_log_append_char(event->decoded_char);
         keyer_service_op_feed_char(event->decoded_char);
         ui_service_keyer_append_decoded_char(event->decoded_char);
         return true;
     case KEYER_EVENT_WORD_SPACE:
+        app_core_keyer_log_append_char(' ');
         keyer_service_op_feed_char(' ');
         ui_service_keyer_append_decoded_char(' ');
         return true;
     case KEYER_EVENT_BACKSPACE:
+        app_core_keyer_log_backspace();
         ui_service_keyer_backspace_decoded();
         return true;
     case KEYER_EVENT_ENTER:
@@ -1373,7 +1680,8 @@ static bool app_core_handle_keyer_mode_decoded_event(const keyer_event_t *event)
         return true;
     case KEYER_EVENT_DIT:
     case KEYER_EVENT_DAH:
-        break;
+        app_core_keyer_cancel_repeat();
+        return false;
     case KEYER_EVENT_NONE:
     default:
         break;
@@ -1482,6 +1790,7 @@ static void app_core_handle_ui_event(ui_input_event_t event)
         }
         app_core_sync_mode_from_ui();
         if (was_keyer && s_app.mode != APP_MODE_KEYER) {
+            (void)app_core_keyer_log_flush();
             keyer_service_clear_op_name();
         }
         ui_service_refresh();

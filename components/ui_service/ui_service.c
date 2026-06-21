@@ -1905,7 +1905,7 @@ static void ui_service_render_system_normal(mini_cw_screen_t *screen)
         return;
     }
 
-    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "Mini-CW V1.1");
+    ui_service_set_text(screen->line[0], sizeof(screen->line[0]), "Mini-CW V1.2");
     ui_service_set_text(screen->line[5], sizeof(screen->line[5]), "Ctrl->Change Setting");
 }
 

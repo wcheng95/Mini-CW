@@ -228,14 +228,15 @@ Debug:  G4-TX, G5-RX
 
 ## Build
 
-Use the ESP-IDF flow:
+Use the repo build wrapper on the configured Windows development machine:
 
 ```text
-idf.py build
+.\tools\build_mini_cw.ps1
 ```
 
-On the configured Windows development machine, the full ESP-IDF environment may
-need to be exported first before running `idf.py`.
+The wrapper sets the ESP-IDF environment values needed by managed component
+Kconfig, including `ESP_IDF_VERSION` and `ESP_ROM_ELF_DIR`, before it calls
+`idf.py build`. This keeps `sdkconfig` stable across local builds.
 
 ## Useful Ownership Checks
 

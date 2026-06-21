@@ -27,6 +27,7 @@ static const char *TAG = "storage_service";
 #define STORAGE_SETTINGS_PATH STORAGE_FATFS_BASE_PATH "/setting.txt"
 #define STORAGE_SETTINGS_TMP_PATH STORAGE_FATFS_BASE_PATH "/setting.tmp"
 #define STORAGE_QSOCALLS_PATH STORAGE_FATFS_BASE_PATH "/qsocalls.csv"
+#define STORAGE_KEYER_LOG_PATH STORAGE_FATFS_BASE_PATH "/keyerlog.txt"
 #define STORAGE_QSOCALLS_HEADER "call,name\n"
 #define STORAGE_FATFS_MAX_FILES 4
 #define STORAGE_FATFS_ALLOC_UNIT 512
@@ -644,7 +645,7 @@ static void storage_settings_set_defaults(void)
     };
 
     s_keyer_config = (keyer_config_t){
-        .key_out_mode = KEYER_KEY_OUT_PADDLE,
+        .key_out_mode = KEYER_KEY_OUT_SK,
         .paddle_mode = KEYER_PADDLE_IAMBIC_A,
         .sk_wpm = 19,
         .tx_delay_s = 0,
@@ -873,7 +874,7 @@ static void storage_normalize_keyer_config(bool *changed)
 
     if ((int)s_keyer_config.key_out_mode < (int)KEYER_KEY_OUT_PADDLE ||
         (int)s_keyer_config.key_out_mode > (int)KEYER_KEY_OUT_OFF) {
-        s_keyer_config.key_out_mode = KEYER_KEY_OUT_PADDLE;
+        s_keyer_config.key_out_mode = KEYER_KEY_OUT_SK;
     }
 
     if ((int)s_keyer_config.paddle_mode < (int)KEYER_PADDLE_IAMBIC_A ||
@@ -1785,12 +1786,39 @@ bool storage_profile_save(void)
 
 bool storage_session_log_append(const char *line)
 {
+    FILE *file;
+    bool ok = true;
+
     if (!storage_firmware_can_access_fatfs("session log")) {
         return false;
     }
 
-    ESP_LOGI(TAG, "session log skipped: %s", line ? line : "");
-    return false;
+    if (line == NULL) {
+        return false;
+    }
+
+    file = fopen(STORAGE_KEYER_LOG_PATH, "a");
+    if (file == NULL) {
+        ESP_LOGW(TAG, "open %s for append failed: errno=%d", STORAGE_KEYER_LOG_PATH, errno);
+        return false;
+    }
+
+    if (fprintf(file, "%s\n", line) < 0) {
+        ESP_LOGW(TAG, "write %s failed", STORAGE_KEYER_LOG_PATH);
+        ok = false;
+    }
+
+    if (fflush(file) != 0) {
+        ESP_LOGW(TAG, "flush %s failed: errno=%d", STORAGE_KEYER_LOG_PATH, errno);
+        ok = false;
+    }
+
+    if (fclose(file) != 0) {
+        ESP_LOGW(TAG, "close %s after append failed: errno=%d", STORAGE_KEYER_LOG_PATH, errno);
+        ok = false;
+    }
+
+    return ok;
 }
 
 bool storage_qsocalls_load(keyer_op_entry_t **entries, size_t *count)

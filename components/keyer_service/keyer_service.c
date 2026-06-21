@@ -76,7 +76,7 @@ static uint8_t s_event_head;
 static uint8_t s_event_tail;
 static uint8_t s_event_count;
 static keyer_key_in_mode_t s_key_in_mode = KEYER_KEY_IN_PADDLE;
-static keyer_key_out_mode_t s_key_out_mode = KEYER_KEY_OUT_PADDLE;
+static keyer_key_out_mode_t s_key_out_mode = KEYER_KEY_OUT_SK;
 static keyer_paddle_mode_t s_paddle_mode = KEYER_PADDLE_IAMBIC_A;
 static uint8_t s_key_in_wpm = KEYER_DEFAULT_TX_WPM;
 static uint8_t s_sk_wpm_current = KEYER_DEFAULT_TX_WPM;
@@ -138,7 +138,7 @@ static bool s_op_candidate_overflow;
 static char s_op_rolling[KEYER_OP_ROLLING_LEN + 1U];
 
 static keyer_config_t s_config = {
-    .key_out_mode = KEYER_KEY_OUT_PADDLE,
+    .key_out_mode = KEYER_KEY_OUT_SK,
     .paddle_mode = KEYER_PADDLE_IAMBIC_A,
     .sk_wpm = KEYER_DEFAULT_TX_WPM,
     .tx_delay_s = 0U,
@@ -181,7 +181,7 @@ static keyer_key_in_mode_t keyer_clamp_key_in_mode(keyer_key_in_mode_t mode)
 static keyer_key_out_mode_t keyer_clamp_key_out_mode(keyer_key_out_mode_t mode)
 {
     if ((int)mode < 0 || (int)mode >= KEYER_KEY_OUT_MODE_COUNT) {
-        return KEYER_KEY_OUT_PADDLE;
+        return KEYER_KEY_OUT_SK;
     }
 
     return mode;
